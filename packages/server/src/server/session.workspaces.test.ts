@@ -67,6 +67,7 @@ import { createTerminalManager } from "../terminal/terminal-manager.js";
 
 import { AgentManager, type AgentManagerEvent, type ManagedAgent } from "./agent/agent-manager.js";
 import { InMemoryAgentTimelineStore } from "./agent/agent-timeline-store.js";
+import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 
 import type { ProviderSubagentDescriptor } from "./agent/provider-subagents/store.js";
 
@@ -3005,6 +3006,50 @@ test("timeline polling reads saved history without resuming and backs off failed
   } finally {
     vi.useRealTimers();
     await manager.closeAgent(record.id);
+  }
+});
+
+// OpenCode has no passive history reader (the snapshot manager refuses it), so an unloaded
+// OpenCode-derived thread keeps loading through its provider to show history.
+test("timeline requests load an unloaded OpenCode-derived thread instead of refusing its history", async () => {
+  const record = makeStoredAgent({
+    id: "00000000-0000-4000-8000-000000000118",
+    cwd: process.cwd(),
+    updatedAt: "2026-11-16T00:00:00.000Z",
+  });
+  record.provider = "opencode-work";
+  record.persistence = { provider: "opencode-work", sessionId: "native-opencode" };
+  const client = new CreateAgentTestClient();
+  const resume = vi.spyOn(client, "resumeSession");
+  const manager = new AgentManager({
+    clients: { "opencode-work": client },
+    logger: createTestLogger(),
+  });
+  const providers = new ProviderSnapshotManager({
+    logger: createTestLogger(),
+    providerOverrides: { "opencode-work": { extends: "opencode", label: "Work OpenCode" } },
+  });
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests({
+    liveAgentManager: manager,
+    providerSnapshotManager: providers,
+    agentStorage: { get: async () => record, list: async () => [record] },
+    onMessage: (message) => emitted.push(message),
+  });
+  try {
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      requestId: "opencode-history",
+      agentId: record.id,
+    });
+    expect(findByType(emitted, "fetch_agent_timeline_response")?.payload).toMatchObject({
+      error: null,
+      agent: { id: record.id },
+    });
+    expect(resume).toHaveBeenCalledOnce();
+  } finally {
+    await manager.closeAgent(record.id).catch(() => {});
+    await providers.shutdown();
   }
 });
 
