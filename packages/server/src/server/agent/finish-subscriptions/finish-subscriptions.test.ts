@@ -91,11 +91,13 @@ async function scenario(
   const observation = new Observation();
   const delivery = new Delivery();
   let active = true;
+  let held = false;
   const service = createFinishSubscriptions({
     store,
     messages: () => delivery,
     open: observation.open.bind(observation),
     callerIsActive: async () => active,
+    callerIsHeld: async () => held,
     serverId: "origin",
     logger: createTestLogger(),
     retryDelayMs,
@@ -111,6 +113,9 @@ async function scenario(
     service,
     archive: () => {
       active = false;
+    },
+    hold: (value: boolean) => {
+      held = value;
     },
   };
 }
@@ -235,6 +240,21 @@ test("archived parent suppresses delivery and removes obsolete intent", async ()
   state.observation.waits[0]!.result.resolve(outcome());
   await expect.poll(async () => (await state.store.list()).length).toBe(0);
   expect(state.delivery.prompts).toHaveLength(0);
+});
+
+test("a quota-latched parent keeps the finish notification until the latch clears", async () => {
+  const state = await scenario();
+  await state.service.register(intent);
+  await until(() => state.observation.waits.length === 1);
+  state.hold(true);
+  state.observation.waits[0]!.result.resolve(outcome());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(state.delivery.prompts).toHaveLength(0);
+  expect(await state.store.list()).toHaveLength(1);
+  state.hold(false);
+  await until(() => state.delivery.prompts.length === 1);
+  state.delivery.acknowledgments[0]!.resolve("steered");
+  await expect.poll(async () => (await state.store.list()).length).toBe(0);
 });
 
 test("permission checkpoint retains intent and completion reports after permission clears", async () => {

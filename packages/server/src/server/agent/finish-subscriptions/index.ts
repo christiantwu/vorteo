@@ -38,6 +38,11 @@ interface Dependencies extends FinishObservation {
   store: FinishSubscriptionStore;
   messages(): AgentMessageDelivery;
   callerIsActive(agentId: string): Promise<boolean>;
+  /**
+   * The caller is held by a quota latch. Its notification would be refused, so the captured
+   * outcome and durable intent wait, retrying at the ordinary delay, until the latch clears.
+   */
+  callerIsHeld?(agentId: string): Promise<boolean>;
   serverId: string;
   logger: Logger;
   retryDelayMs?: number;
@@ -177,6 +182,10 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     permissions: Set<string>,
     signal: AbortSignal,
   ): Promise<boolean> {
+    // A latched caller would refuse the notification. The retry path keeps the captured outcome
+    // and durable intent until the latch clears.
+    if (await deps.callerIsHeld?.(record.callerAgentId))
+      throw new Error("The caller is paused at a usage limit; the notification waits.");
     const requests = result.final?.pendingPermissions ?? [];
     const reason = reasonFor(result);
     for (const id of permissions)
