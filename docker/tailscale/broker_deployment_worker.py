@@ -8,7 +8,7 @@ import time
 from channel_identity import physical_directory, read_file, file_identity
 from broker_deployment import (deploy_files, exclusive, encode, sha, preservation, assert_preserved, directory_pin,
                                approved_preservation_sha256)
-from broker_deployment_observation import NativeObservation
+from broker_deployment_observation import NativeObservation, route_argv
 
 
 class ParentGuard:
@@ -303,7 +303,7 @@ class Deployment:
                         state['plistSha256'] != binding['plist']['sha256']):
                     return unresolved
                 process = state['process']
-                if process is not None and (process['argv'] != binding['argv'] or process['uid'] != os.getuid()):
+                if process is not None and (not route_argv(process['argv'], binding) or process['uid'] != os.getuid()):
                     return unresolved
             if receipt['commitSha256'] != commit or receipt['installedFilesSha256'] != files:
                 return unresolved

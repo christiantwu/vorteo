@@ -10,6 +10,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-14
 
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
+## Unreleased - 2026-11-14
+
 ### Fixed
 
 - The Nova bridge no longer pages a thread's whole history when it first sees the thread or after a daemon restart. It reads the newest rows, reports a gap when that window cannot cover the change, and skips threads that have not changed. On the M2 these full-history reads drove the daemon out of memory.
