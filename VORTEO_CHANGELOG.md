@@ -8,6 +8,23 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Combine 1 source contributions; retain their release notes below
 
+## 26.11.1700 - 2026-11-17
+
+### Fixes
+
+- Opening an unloaded thread shows its history again instead of "The original transcript could not be read." Since 26.11.1600, every unloaded thread was read from saved history without loading, and a thread whose provider replays no saved history got that error: a completed plugin-provider thread after its plugin reloads, a thread on another provider without history replay, or a Claude thread that was never prompted or whose transcript is gone.
+- Only Claude and Codex threads keep the memory protection from 26.11.1600: opening them reads saved history without loading the thread. Threads on every other provider with a saved session, including OpenCode, plugin and ACP providers, load through their provider again and stay in memory until archived, as before 26.11.1600. A Claude thread whose transcript is empty or missing also loads, which costs little because it has little or no history. A Codex thread whose saved history read fails still shows that read error.
+
+### Maintenance
+
+- Prepare release 26.11.1700, which replaces 26.11.1601 as the stable release.
+
+## Unreleased - 2026-11-17
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## 26.11.1601 - 2026-11-16
 
 ### Fixes
