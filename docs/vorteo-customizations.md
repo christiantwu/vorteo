@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): the installer reports Tailscale's refusal reason, tests Dev's route to the coordinator and reports the Host firewall rule, and warns before adoption that gate mode does not read compose.override.yaml.
+
 Maintenance review (2026-11-01): the Claude connection panel no longer offers a shared connection for the built-in provider, which the coordinator always refuses. It points to adding a Claude account.
 
 Maintenance review (2026-11-01): a failed packaged Claude CLI selection is no longer cached, so repairing a release does not need a process restart.
