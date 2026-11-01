@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Retain daemon status details when CLI authentication assertions fail, so CI reports the connection error instead of only an unreachable label.
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
 - Run native broker transport fixtures only on macOS, matching the production executor and its Python path.
 
 ## Unreleased - 2026-10-31
