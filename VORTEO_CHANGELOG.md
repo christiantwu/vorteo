@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-10-31
 
+### Maintenance
+
+- Run native broker transport fixtures only on macOS, matching the production executor and its Python path.
+
+## Unreleased - 2026-10-31
+
 ### Fixed
 
 - Verify recovered broker preservation evidence against the approved baseline digest, so coordinated receipt edits cannot hide a deleted request. New inbox arrivals remain valid.

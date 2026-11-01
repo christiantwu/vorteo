@@ -2,10 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, realpath, stat, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test as platformTest, vi } from "vitest";
 import { createPreviewBrokerDeploymentExecutor } from "./preview-broker-deployment-executor.js";
 import { PreviewBrokerDeploymentJobSchema } from "@getpaseo/protocol/preview-broker-deployment";
 import type { InstallationConfig } from "./config.js";
+
+// The production executor and its native Python transport are macOS-only.
+const test = platformTest.skipIf(process.platform !== "darwin");
 
 const state = vi.hoisted(() => ({
   inputs: new Map<string, Buffer>(),
