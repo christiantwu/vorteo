@@ -4,7 +4,7 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
-## 26.11.104 - 2026-11-01
+## 26.11.105 - 2026-11-01
 
 - Provision a starter profile for each ready provider, including connections added later, while preserving edited and deleted profiles.
 
@@ -14,6 +14,8 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - Show detected accounts in new workspaces even when no profiles have been saved. New tasks can use account defaults without another login.
 
 ### Installation
+
+- Detect the host's native Claude CLI login without requiring a separate installation subscription token. Managed account bindings still require verified credential delivery.
 
 - Show the Vorteo ASCII wordmark when the installer starts.
 
