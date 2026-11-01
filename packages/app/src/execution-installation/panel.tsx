@@ -1,3 +1,9 @@
+import type { BrokerReviewJob } from "./preview-broker-review";
+import {
+  brokerActionDisabledReason,
+  brokerReviewSummary,
+  type BrokerAction,
+} from "./preview-broker-review";
 import { MaintenanceServiceQueue } from "./maintenance-service-queue";
 import { MaintenanceDashboard } from "./maintenance-dashboard";
 import { RecoveryBookmark } from "./recovery-bookmark";
@@ -429,7 +435,9 @@ function InstallationPanel({
   const missingRequest =
     requestId &&
     state.lastUpdatedAt &&
-    ![...state.jobs, ...state.helperJobs, ...state.monitorJobs].some((job) => job.id === requestId);
+    ![...state.jobs, ...state.helperJobs, ...state.monitorJobs, ...state.brokerJobs].some(
+      (job) => job.id === requestId,
+    );
   const conflicts = Object.values(state.profileSharing?.sources ?? {}).some(
     (source) => source.error || source.conflicts.length,
   );
@@ -478,6 +486,14 @@ function InstallationPanel({
               onCancel={model.cancelMaintenanceService}
             />
             <DaemonAutomationControl model={model} state={state} />
+            {state.brokerJobs.map((job) => (
+              <BrokerRequest
+                key={`${job.id}:${job.revision}`}
+                job={job}
+                model={model}
+                busy={state.busy}
+              />
+            ))}
             {state.monitorJobs.map((job) => (
               <MonitorRequest
                 key={`${job.id}:${job.revision}`}
@@ -1089,6 +1105,121 @@ function HelperActionError({ model }: { model: InstallationPanelModel }) {
         Dismiss
       </Button>
     </View>
+  );
+}
+
+function BrokerRequest({
+  job,
+  model,
+  busy,
+}: {
+  job: BrokerReviewJob;
+  model: InstallationPanelModel;
+  busy: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const size = useVortonTouch() ? "md" : "sm";
+  const toggle = useCallback(() => setExpanded((value) => !value), []);
+  return (
+    <View style={[styles.cardBody, settingsStyles.rowBorder]} testID={`broker-request-${job.id}`}>
+      <View style={styles.requestHeader}>
+        <Text style={settingsStyles.rowTitle}>
+          {job.target === "preview-broker-deployment"
+            ? "Preview broker consumer deployment"
+            : "Preview broker channel trust"}
+        </Text>
+        <StatusBadge
+          label={job.stage === "recovery_required" ? "Needs inspection" : job.status}
+          variant={job.stage === "recovery_required" ? "warning" : "muted"}
+        />
+      </View>
+      <Text style={styles.text}>{brokerReviewSummary(job)}</Text>
+      <Text style={styles.text}>{job.reason}</Text>
+      <Button variant="ghost" size={size} onPress={toggle} {...disclosureProps(expanded)}>
+        Details
+      </Button>
+      {expanded ? (
+        <SettingsExpansion>
+          <Text selectable style={styles.text}>
+            {job.detail}
+            {"\n"}Source: {job.plan.sourceCommit}
+            {"\n"}Plan: {job.planSha256}
+            {job.target === "preview-broker-deployment"
+              ? job.plan.targets.map(
+                  (item) =>
+                    `\nDeployment: ${item.root}\n` +
+                    Object.entries(item.files)
+                      .map(
+                        ([name, file]) =>
+                          `${name}: ${file.expected.kind === "present" ? file.expected.sha256 : "absent"} -> ${file.candidate.sha256}`,
+                      )
+                      .join("\n"),
+                )
+              : job.plan.brokers.map(
+                  (item) =>
+                    `\nConfig: ${item.configPath}\nBefore: ${item.expectedSha256}\nAfter: ${item.candidateSha256}\nAPFS volume: ${item.anchor.volumeUUID}`,
+                )}
+            {job.target === "preview-broker-deployment"
+              ? job.plan.registrations.map(
+                  (item) =>
+                    `\nRegistration: ${item.domain}/${item.label} (${item.disposition})\nRoot: ${item.root}\nEnabled: ${item.enabled}; override: ${item.override}\nProcess: ${item.process ? `PID ${item.process.pid}; birth ${item.process.birth.join(":")}; UID ${item.process.uid}; argv ${JSON.stringify(item.process.argv)}` : "idle, no registered process"}`,
+                )
+              : null}
+            {job.target === "preview-broker-deployment"
+              ? `\nScope: only the declared managed routes and ${job.plan.manualParticipants.length} manual participants are known. No new manual broker calls until release.\nResume is allowed only while legacy channel identity still refuses request consumption.`
+              : null}
+            {job.target === "preview-broker-deployment"
+              ? job.plan.manualParticipants.map(
+                  (item) =>
+                    `\nManual participant: PID ${item.pid}; birth ${item.birth.join(":")}; UID ${item.uid}; argv ${JSON.stringify(item.argv)}`,
+                )
+              : null}
+            {"\n"}Evidence and backups: {job.plan.evidenceDirectory}
+            {"\n"}Sequential replacements. Backups and partial evidence are retained; no automatic
+            rollback.
+          </Text>
+        </SettingsExpansion>
+      ) : null}
+      {["pending", "approved"].includes(job.status) ? (
+        <ActionFooter style={styles.actions}>
+          {(["approve", "cancel"] as BrokerAction[]).map((action) => (
+            <BrokerActionButton key={action} job={job} model={model} action={action} busy={busy} />
+          ))}
+        </ActionFooter>
+      ) : null}
+    </View>
+  );
+}
+
+function BrokerActionButton({
+  job,
+  model,
+  action,
+  busy,
+}: {
+  job: BrokerReviewJob;
+  model: InstallationPanelModel;
+  action: BrokerAction;
+  busy: boolean;
+}) {
+  const size = useVortonTouch() ? "md" : "sm";
+  const onPress = useCallback(() => {
+    void model.decideBroker(job, action);
+  }, [model, job, action]);
+  const approveLabel =
+    job.target === "preview-broker-deployment"
+      ? "Approve consumer deployment"
+      : "Approve channel identity migration";
+  return (
+    <RestartActionButton
+      size={size}
+      testID={`broker-${job.id}-${action}`}
+      variant={action === "approve" ? "destructive" : "outline"}
+      disabledReason={brokerActionDisabledReason(job, action, { busy, unlocked: true })}
+      onPress={onPress}
+    >
+      {action === "approve" ? approveLabel : "Cancel"}
+    </RestartActionButton>
   );
 }
 
@@ -2039,6 +2170,10 @@ function restartSummaryNeedsAction(summary: RestartSummary) {
     summary.nativeHelper?.requested,
     summary.nativeHelper?.recovery,
     summary.sessionHost?.requested,
+    summary.previewBrokerDeployment?.requested,
+    summary.previewBrokerDeployment?.recovery,
+    summary.previewBroker?.requested,
+    summary.previewBroker?.recovery,
     summary.previewMonitor?.requested,
     summary.previewMonitor?.recovery,
   ].some((count) => (count ?? 0) > 0);
@@ -2080,6 +2215,10 @@ function RestartBanner({ model }: { model: InstallationPanelModel }) {
     (job) =>
       ["pending", "approved", "running"].includes(job.status) || job.stage === "recovery_required",
   );
+  const brokers = state.brokerJobs.filter(
+    (job) =>
+      ["pending", "approved", "running"].includes(job.status) || job.stage === "recovery_required",
+  );
   const monitors = state.monitorJobs.filter(
     (job) =>
       ["pending", "approved", "running"].includes(job.status) || job.stage === "recovery_required",
@@ -2087,7 +2226,8 @@ function RestartBanner({ model }: { model: InstallationPanelModel }) {
   const services = (state.serviceQueue?.jobs ?? []).filter((job) =>
     ["pending", "approved", "running", "failed"].includes(job.status),
   );
-  if (!jobs.length && !helpers.length && !monitors.length && !services.length) return null;
+  if (!jobs.length && !helpers.length && !monitors.length && !brokers.length && !services.length)
+    return null;
   return (
     <View testID="installation-restart-banner">
       {state.error ? (
@@ -2111,6 +2251,22 @@ function RestartBanner({ model }: { model: InstallationPanelModel }) {
           reviewLabel="Review maintenance"
           onReview={open}
         />
+      ))}
+      {brokers.map((job) => (
+        <View key={job.id}>
+          <MaintenanceNotice
+            needsAction={job.status === "pending" || job.stage === "recovery_required"}
+            revision={`${job.id}:${job.revision}:${job.status}:${job.stage}`}
+            title={
+              job.target === "preview-broker-deployment"
+                ? "Preview broker consumer deployment"
+                : "Preview broker trust migration"
+            }
+            description={brokerReviewSummary(job)}
+            reviewLabel="Review broker"
+            onReview={open}
+          />
+        </View>
       ))}
       {monitors.map((job) => (
         <View key={job.id}>

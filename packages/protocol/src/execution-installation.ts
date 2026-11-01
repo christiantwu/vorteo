@@ -266,6 +266,22 @@ export const RestartSummarySchema = z.object({
     })
     .optional(),
   // COMPAT(previewMonitorMaintenance): older clients ignore distinct monitor counts.
+  previewBrokerDeployment: z
+    .object({
+      requested: z.number().int().nonnegative(),
+      queued: z.number().int().nonnegative(),
+      running: z.number().int().nonnegative(),
+      recovery: z.number().int().nonnegative(),
+    })
+    .optional(),
+  previewBroker: z
+    .object({
+      requested: z.number().int().nonnegative(),
+      queued: z.number().int().nonnegative(),
+      running: z.number().int().nonnegative(),
+      recovery: z.number().int().nonnegative(),
+    })
+    .optional(),
   previewMonitor: z
     .object({
       requested: z.number().int().nonnegative(),

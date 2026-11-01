@@ -4,6 +4,56 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## Unreleased - 2026-11-01
+
+### Maintenance
+
+- Integrate current main and its preview channel changes into installer release validation
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
+- Wait for the matching submission acceptance before checking turn completion in the rewind browser test, preventing an idle setup race.
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
+- Give Linux desktop CI the existing browser CI budget for cold Metro compilation. Lifecycle and UI assertion deadlines remain unchanged.
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
+- Scope broker executor path fixtures and the filesystem-backed Host HTTP test to POSIX systems. Pure broker workflow tests continue to run on Windows.
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
+- Retain daemon status details when CLI authentication assertions fail, so CI reports the connection error instead of only an unreachable label.
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
+- Run native broker transport fixtures only on macOS, matching the production executor and its Python path.
+
+## Unreleased - 2026-10-31
+
+### Fixed
+
+- Verify recovered broker preservation evidence against the approved baseline digest, so coordinated receipt edits cannot hide a deleted request. New inbox arrivals remain valid.
+
+## Unreleased - 2026-10-31
+
+### Added
+
+- Add a separate tracked broker consumer deployment with exact owner review, native scheduler suppression, preserved file evidence and observation-only recovery. Channel trust approval and preview readiness remain separate.
+- Restore the reviewed preview channel identity migration workflow on the current installation code. Exact approval binds APFS volume and directory identities, retained configuration, and preservation evidence. Consumer deployment and coordinator activation remain separate prerequisites; this source change does not repair an installed broker by itself.
+- Validate the owner approval HTTP boundary using the test server's actual loopback origin, retaining rejection of agent credentials and foreign origins.
+
 ## Unreleased - 2026-10-31
 
 ### Fixed

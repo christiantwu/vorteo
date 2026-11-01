@@ -1,3 +1,5 @@
+import { PreviewBrokerDeploymentConfigurationSchema } from "@getpaseo/protocol/preview-broker-deployment";
+import { PreviewBrokerConfigurationSchema } from "@getpaseo/protocol/preview-broker-maintenance";
 import { maintenanceDelegationActivation } from "./owner-delegation.js";
 import { lstatSync, realpathSync } from "node:fs";
 import { readPrivateBootstrapConfiguration } from "./coordinator-bootstrap-private-configuration.js";
@@ -203,10 +205,67 @@ export async function createBootstrapReviewService(
   );
 }
 
+function verifyDeploymentBootstrapBinding(
+  plan: CoordinatorBootstrapPlan,
+  host: BootstrapAdmissionHost,
+): void {
+  const changes = planConfigurationChanges(plan);
+  if (!changes.ok) throw new BootstrapRequestConflict(changes.reason);
+  const deploymentChange = changes.changes.find(
+    (item) => item.setting === "previewBrokerDeployment",
+  );
+  if (deploymentChange?.value != null) {
+    const deployment = PreviewBrokerDeploymentConfigurationSchema.parse(deploymentChange.value);
+    const recovery = bootstrapRecoveryRelease(plan);
+    const directory = path.join(
+      recovery.directory,
+      "packages/server/dist/server/server/execution-installation",
+    );
+    if (
+      deployment.docker !== host.docker ||
+      deployment.socket !== host.socket ||
+      deployment.containerId !== host.containerId ||
+      deployment.recovery.node.path !== recovery.node.path ||
+      deployment.recovery.node.sha256 !== recovery.node.sha256 ||
+      deployment.recovery.journal.path !== path.join(directory, "lifecycle-journal.js") ||
+      deployment.recovery.queue.path !== path.join(directory, "restarts.js") ||
+      deployment.recovery.configModule.path !== path.join(directory, "config.js")
+    )
+      throw new BootstrapRequestConflict(
+        "Consumer deployment must bind exact container and recovery readers",
+      );
+  }
+}
+
 function verifyMonitorBootstrapBinding(
   plan: CoordinatorBootstrapPlan,
   host: BootstrapAdmissionHost,
 ): void {
+  const changes = planConfigurationChanges(plan);
+  if (!changes.ok) throw new BootstrapRequestConflict(changes.reason);
+  const change = changes.changes.find((item) => item.setting === "previewBroker");
+  verifyDeploymentBootstrapBinding(plan, host);
+  if (change?.value != null) {
+    const broker = PreviewBrokerConfigurationSchema.parse(change.value);
+    const recovery = bootstrapRecoveryRelease(plan);
+    const directory = path.join(
+      recovery.directory,
+      "packages/server/dist/server/server/execution-installation",
+    );
+    if (
+      broker.docker !== host.docker ||
+      broker.socket !== host.socket ||
+      broker.containerId !== host.containerId ||
+      broker.recovery.node.path !== recovery.node.path ||
+      broker.recovery.node.sha256 !== recovery.node.sha256 ||
+      broker.recovery.journal.path !== path.join(directory, "lifecycle-journal.js") ||
+      broker.recovery.queue.path !== path.join(directory, "restarts.js") ||
+      broker.recovery.configModule.path !== path.join(directory, "config.js")
+    )
+      throw new BootstrapRequestConflict(
+        "Broker configuration must bind exact paired container and retained recovery readers",
+      );
+  }
   if (
     plan.previewMonitorConfiguration &&
     (plan.previewMonitorConfiguration.docker !== host.docker ||

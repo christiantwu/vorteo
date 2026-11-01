@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): installer release work incorporates the current main branch, including the accepted preview channel migration and its validation fixes. Existing installation fixes and pending shared Projects acceptance are retained.
+
 Maintenance review (2026-10-31): Linux cleanup makes each emptied disposable mount root traversable before the Host removes it. This fixes removal of a Dev-owned directory with mode 0700 after its contents were already deleted. Adopted deployments, Projects and keep-data remain excluded from cleanup.
 
 Maintenance review (2026-10-31): the Dev internal network disables the bridge's IPv4 address, closing direct access to Host services bound on that address. A real Docker 24 control reproduced the old bypass and verified refusal with the option enabled; Dev-to-gate peer traffic and the gate's published loopback port remain reachable. Full release acceptance remains pending.
@@ -21,6 +23,7 @@ Maintenance review (2026-10-31): Host installer build subprocesses default to a 
 Maintenance review (2026-10-31): fresh Linux container homes initialize under the container account after assigning the private bind mount to that account. The existing capability restrictions remain in place; inaccessible populated homes are refused without changing ownership. Legacy installation acceptance checks exact home and workspace mounts and preserved synthetic files. README onboarding is unchanged.
 
 Maintenance review (2026-10-31): installation CI prints Host build logs and container logs on failure and retains the diagnostic files for seven days in the workflow workspace runtime directory. The generated owner password is redacted. Product behavior and README onboarding are unchanged.
+Maintenance review (2026-10-31): the reviewed preview channel identity migration is integrated with the current lifecycle queue, recovery readers and exact approval interface. It preserves requests, reservations and policy while recording APFS volume trust separately from device numbers. It requires compatible deployed consumers and protected coordinator configuration before admission. The missing tracked consumer deployment adapter remains unfinished; no installed repair or preview readiness is claimed. See [channel maintenance](preview-broker-maintenance.md). README overview and onboarding are unchanged.
 
 Maintenance review (2026-10-31): the guarded publisher verifies active organization ownership for same-repository pull requests authored by the current account. Repository administrators and ordinary organization members gain no approval authority. Focused tests cover ownership, access failures and blocking reviews. The correction preserves date-based release versions. Runtime and README behavior are unchanged.
 
@@ -2124,3 +2127,5 @@ Maintenance review: installer service files take their PATH from `scripts/instal
 Maintenance review: the Appearance theme row drops the built-in theme dropdown, including its System option; plugin themes keep a menu shown only when one is installed. The System appearance browser test is replaced one for one by a layout check; the test count is unchanged.
 
 Maintenance review: a systemd Host restarts immediately through `systemctl --user restart <unit>`; coordinator maintenance stays launchd-only and says so on systemd Hosts. Ported from #5 without its unavailable-restart label, since the restart now runs.
+
+Broker maintenance also has a separate eight-file consumer deployment target. Its protected native worker, participant scope, exact owner review and recovery readers are independent of channel trust migration. Deployment restores only brokers whose unchanged legacy channel pins still refuse request consumption; it does not establish a ready preview. See [broker maintenance](preview-broker-maintenance.md).
