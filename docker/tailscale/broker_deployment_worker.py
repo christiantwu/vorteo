@@ -100,6 +100,13 @@ class Deployment:
             if sha(raw) != desired['candidate']['sha256'] or sha(raw) != item['sha256'] or list(file_identity(info)) != item['identity']:
                 raise ValueError('Committed consumer changed')
         before, _ = self.read('before.json')
+        if (before['innerPlanSha256'] != sha(encode(self.inner)) or
+                before['outerPlanSha256'] != self.outer or
+                set(before['preservation']) != {target['root'] for target in self.plan['targets']}):
+            raise ValueError('Retained preservation baseline belongs to another plan')
+        for target in self.plan['targets']:
+            if sha(encode(before['preservation'][target['root']])) != target['preservationSha256']:
+                raise ValueError('Retained preservation baseline differs from approved digest')
         additions = {}
         after = {}
         for target in self.plan['targets']:

@@ -6,6 +6,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-10-31
 
+### Fixed
+
+- Verify recovered broker preservation evidence against the approved baseline digest, so coordinated receipt edits cannot hide a deleted request. New inbox arrivals remain valid.
+
+## Unreleased - 2026-10-31
+
 ### Added
 
 - Add a separate tracked broker consumer deployment with exact owner review, native scheduler suppression, preserved file evidence and observation-only recovery. Channel trust approval and preview readiness remain separate.

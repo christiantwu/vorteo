@@ -195,6 +195,36 @@ class NativeDeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Prepared broker state changed"): worker.execute()
         self.assertEqual(before, effects)
 
+    def test_recovery_anchors_baseline_to_approved_digest(self):
+        root = self.targets[0]['root']
+        request = Path(root) / 'channel' / 'inbox' / (str(uuid.uuid4()) + '.json')
+        self.write(request, b'approved pending request')
+        worker, observer, states, effects = self.native()
+        self.assertEqual(worker.execute()['kind'], 'committed')
+        # New inbox arrivals remain legitimate after commitment.
+        added = request.with_name(str(uuid.uuid4()) + '.json')
+        self.write(added, b'new pending request')
+        self.assertEqual(worker.observe()['kind'], 'committed')
+        before_path = self.evidence / 'before.json'
+        receipt_path = self.evidence / 'deployment-commit.json'
+        original_before = before_path.read_bytes()
+        before = json.loads(original_before)
+        before['innerPlanSha256'] = '0' * 64
+        self.write(before_path, encode(before))
+        self.assertEqual(worker.observe()['kind'], 'unresolved')
+        self.write(before_path, original_before)
+        before = json.loads(original_before)
+        receipt = json.loads(receipt_path.read_bytes())
+        key = 'inbox/' + request.name
+        del before['preservation'][root]['inventory'][key]
+        for phase in ('baseline', 'after'):
+            del receipt['preservationReport'][phase][root]['inventory'][key]
+        receipt['preservationSha256'] = sha(encode(receipt['preservationReport']))
+        self.write(before_path, encode(before))
+        self.write(receipt_path, encode(receipt))
+        request.unlink()
+        self.assertEqual(worker.observe()['kind'], 'unresolved')
+
     def test_disabled_absent_stays_untouched(self):
         worker, observer, states, effects = self.native(('absent','absent'), (False,False))
         self.assertEqual(worker.execute()['kind'], 'committed')
