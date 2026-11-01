@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): release 26.11.102 aligns the CI routing contract with the macOS 15 file-observation job after runner migration. The installer and runtime are unchanged.
+
 Maintenance review (2026-11-01): release 26.11.101 moves remaining macOS 14 test and packaging jobs to macOS 15 after GitHub rejected the retired runner during release validation. Installer behavior is unchanged from 26.11.100.
 
 Maintenance review (2026-11-01): release 26.11.100 prepares Linux shared Projects use explicit ACLs for Host and Dev with different numeric user IDs, retaining file owners and unrelated effective access. New and adopted installations verify bidirectional writes; repair adds the step for old plans. Private append-only permission receipts survive uninstall and support conditional rollback. Symlinks stay untouched; foreign-owned entries, special files, nested filesystems and outside hard links are refused. README and installation documentation describe inheritance, filesystem requirements and recovery.

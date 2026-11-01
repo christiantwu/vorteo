@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.102 - 2026-11-01
+
+### Maintenance
+
+- Align the CI routing contract with the supported macOS 15 file-observation job name.
+
 ## 26.11.101 - 2026-11-01
 
 ### Maintenance
