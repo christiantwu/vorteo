@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createPreviewBrokerDeploymentExecutor } from "./preview-broker-deployment-executor.js";
+import { createPreviewBrokerExecutor } from "./preview-broker-executor.js";
 import { inspectMaintenanceObservationRuntime } from "./coordinator-bootstrap-maintenance-observation-runtime.js";
 import { reconcileNativeInitialHostActivation } from "./maintenance/host-supervisor-activation.js";
 import { createNativeMaintenanceServiceExecutor } from "./coordinator-bootstrap-maintenance-service-producer.js";
@@ -128,6 +132,28 @@ if (config.previewMonitor)
       installationId: config.public.installationId,
       configuration: config.previewMonitor,
       writableMountRoots: () => inspectBootstrapWritableMountRoots(config.previewMonitor!),
+    }),
+  );
+if (config.previewBrokerDeployment && process.platform === "darwin") {
+  executor.brokerDeployment = createPreviewBrokerDeploymentExecutor({
+    config,
+    configurationFile: {
+      path: realpathSync(configFile),
+      sha256: createHash("sha256").update(readFileSync(configFile)).digest("hex"),
+    },
+    assertActive() {
+      if (startupFence && !startupFence.released())
+        throw new Error("Coordinator startup remains fenced");
+    },
+    writableMountRoots: () => inspectBootstrapWritableMountRoots(config.previewBrokerDeployment!),
+  });
+}
+if (config.previewBroker && process.platform === "darwin")
+  Object.assign(
+    executor,
+    createPreviewBrokerExecutor({
+      config,
+      writableMountRoots: () => inspectBootstrapWritableMountRoots(config.previewBroker!),
     }),
   );
 const profiles = createInstallationProfiles(

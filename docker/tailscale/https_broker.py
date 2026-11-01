@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Bounded host consumer. Requests are data; all host commands are fixed argv."""
-import fcntl
 import hashlib
 from itertools import islice
 import json
@@ -15,6 +14,7 @@ import time
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from host_config import load
+from channel_identity import broker_lock, verify_channel, verify_fence
 
 MAX_BYTES = 4096
 ID = re.compile(r'^[a-f0-9-]{36}$')
@@ -500,10 +500,11 @@ def runtime_for(config):
 
 
 class Broker:
-    def __init__(self, config, runtime=None):
+    def __init__(self, config, runtime=None, reload_config=None):
         self.c = config
         self.root = Path(config['deployment'])
         self.runtime = runtime or runtime_for(config)
+        self.reload_config = reload_config
         self.ledger_path = self.root / 'https-broker-ledger.json'
         self.channel = Path(config['channel'])
         self.ledger = safe_read(self.ledger_path, 2 * 1024 * 1024) if self.ledger_path.exists() else {'entries': {}, 'requests': {}}
@@ -759,15 +760,17 @@ class Broker:
                 self.save()
 
     def run(self):
-        # The entire channel must still be the installation's original directories.
-        for name, identity in self.c['channelIdentities'].items():
-            path = self.channel / name
-            info = path.lstat()
-            if not stat.S_ISDIR(info.st_mode) or [info.st_dev, info.st_ino] != identity or path.resolve() != path.absolute():
-                raise ValueError('Request channel replaced; administrator review required')
-        self.runtime.preflight()
-        with (self.root / 'https-broker.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with broker_lock(self.root):
+            # A process loaded before a managed migration must not use stale pins.
+            if self.reload_config is not None:
+                fresh = self.reload_config()
+                if fresh['deployment'] != str(self.root) or fresh['channel'] != str(self.channel):
+                    raise ValueError('Broker topology changed while acquiring lock')
+                self.c = fresh
+                self.runtime = runtime_for(fresh)
+            verify_fence(self.c)
+            verify_channel(self.c)
+            self.runtime.preflight()
             # Reload inside the lock to serialize concurrent consumers.
             if self.ledger_path.exists():
                 self.ledger = safe_read(self.ledger_path, 2 * 1024 * 1024)
@@ -814,7 +817,7 @@ class Broker:
 
 if __name__ == '__main__':
     try:
-        Broker(load()).run()
+        Broker(load(protected=True), reload_config=lambda: load(protected=True)).run()
     except BlockingIOError:
         pass
     except Exception as error:

@@ -307,6 +307,8 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         run: xvfb-run -a --server-args="-screen 0 1280x800x24" npm run test:e2e:lifecycle --workspace=@getpaseo/desktop
         env:
+          # Match browser CI's cold Metro compile budget; assertion deadlines stay unchanged.
+          E2E_METRO_WARMUP_TIMEOUT_MS: "300000"
           PASEO_DESKTOP_LIFECYCLE_ARTIFACT_DIR: ${{ runner.temp }}/desktop-lifecycle
 
       - name: Upload desktop lifecycle screenshots

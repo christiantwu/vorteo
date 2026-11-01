@@ -308,6 +308,43 @@ if (
         throw new Error("Monitor inspection requires trusted Host client");
       resource = "/api/installation/monitor-selection";
       break;
+    case "request-broker-consumer-deployment": {
+      if (config.kind !== "host-agent")
+        throw new Error("Preview broker consumer deployment requires the trusted Host client");
+      if (!values["request-file"])
+        throw new Error("Use --request-file with the exact prepared broker plan and request ID");
+      const capabilityResponse = await fetch(new URL("/api/installation/capabilities", base), {
+        headers: { Authorization: `Bearer ${config.token}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (
+        !capabilityResponse.ok ||
+        !(await capabilityResponse.json()).previewBrokerDeployment?.available
+      )
+        throw new Error(
+          "Preview broker consumer deployment is unavailable. No installation requested.",
+        );
+      resource = "/api/installation/broker-deployment-requests";
+      body = JSON.parse(readFileSync(values["request-file"], "utf8"));
+      break;
+    }
+    case "request-broker-channel-rebind": {
+      if (config.kind !== "host-agent")
+        throw new Error("Preview broker maintenance requires the trusted Host client");
+      if (!values["request-file"])
+        throw new Error("Use --request-file with the exact prepared broker plan and request ID");
+      const capabilityResponse = await fetch(new URL("/api/installation/capabilities", base), {
+        headers: { Authorization: `Bearer ${config.token}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!capabilityResponse.ok || !(await capabilityResponse.json()).previewBroker?.available)
+        throw new Error("Preview broker maintenance is unavailable. No installation requested.");
+      resource = "/api/installation/broker-rebind-requests";
+      body = JSON.parse(readFileSync(values["request-file"], "utf8"));
+      break;
+    }
     case "request-monitor": {
       if (config.kind !== "host-agent")
         throw new Error("Preview monitor maintenance requires the trusted Host client");
@@ -362,6 +399,20 @@ if (
     case "session-host-status":
       await requireSessionHostJob(base, config);
       resource = "/api/installation/session-host";
+      break;
+    case "broker-deployment-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Preview broker inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A request ID is required");
+      resource = `/api/installation/broker-deployment-requests/${positionals[1]}`;
+      break;
+    case "broker-rebind-status":
+      if (config.kind !== "host-agent")
+        throw new Error("Preview broker inspection requires the trusted Host client");
+      if (!/^[a-f0-9-]{36}$/.test(positionals[1] ?? ""))
+        throw new Error("A request ID is required");
+      resource = `/api/installation/broker-rebind-requests/${positionals[1]}`;
       break;
     case "monitor-status":
       if (config.kind !== "host-agent")
@@ -509,7 +560,7 @@ if (
       break;
     default:
       throw new Error(
-        "Commands: capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, container-agents (Host only)",
+        "Commands: request-broker-consumer-deployment --request-file, broker-deployment-status ID, request-broker-channel-rebind --request-file, broker-rebind-status ID, capabilities, request-worker-launch, worker-launch-status, request-restart, restart-status, contribution-status, request-coordinator, coordinator-status, request-helper, helper-status, request-session-host --install|--remove, session-host-status, read-instructions, request-instructions, instructions-status, container-agents (Host only)",
       );
   }
   let upload;
@@ -640,6 +691,10 @@ if (
   }
   let result = await response.json();
   if (
+    positionals[0] === "request-broker-consumer-deployment" ||
+    positionals[0] === "broker-deployment-status" ||
+    positionals[0] === "request-broker-channel-rebind" ||
+    positionals[0] === "broker-rebind-status" ||
     positionals[0] === "request-monitor" ||
     positionals[0] === "monitor-status" ||
     positionals[0] === "request-helper" ||

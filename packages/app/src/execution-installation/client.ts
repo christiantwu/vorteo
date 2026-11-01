@@ -1,4 +1,13 @@
 import {
+  PreviewBrokerDeploymentJobSchema,
+  type PreviewBrokerDeploymentJob,
+} from "@getpaseo/protocol/preview-broker-deployment";
+import {
+  PreviewBrokerJobSchema,
+  type PreviewBrokerJob,
+} from "@getpaseo/protocol/preview-broker-maintenance";
+import type { BrokerAction } from "./preview-broker-review";
+import {
   MaintenanceDelegationStatusSchema,
   type MaintenanceDelegationStatus,
 } from "@getpaseo/protocol/maintenance-approval";
@@ -174,6 +183,8 @@ export class InstallationClient {
   private devRepairSupported = false;
   private devRepairAvailable = false;
   private monitorRetryAt = 0;
+  private brokerRetryAt = 0;
+  private brokerDeploymentRetryAt = 0;
   private sessionHostRetryAt = 0;
   private sessionHostSupported = false;
   sessionsSupported = false;
@@ -245,6 +256,77 @@ export class InstallationClient {
     return RestartSummarySchema.parse(await response.json());
   }
 
+  async listBrokers(): Promise<PreviewBrokerJob[]> {
+    if (this.password === null) throw new Error("Unlock installation controls first");
+    const now = this.ports.now ?? Date.now;
+    if (now() < this.brokerRetryAt) return [];
+    try {
+      return z
+        .strictObject({ jobs: z.array(PreviewBrokerJobSchema) })
+        .parse(await this.request("broker-rebinds/query", {})).jobs;
+    } catch (error) {
+      if (error instanceof InstallationRouteUnavailable) {
+        this.brokerRetryAt = now() + 60_000;
+        return [];
+      }
+      throw error;
+    }
+  }
+  async decideBroker(job: PreviewBrokerJob, decision: BrokerAction): Promise<PreviewBrokerJob> {
+    const result = PreviewBrokerJobSchema.parse(
+      await this.request("broker-rebinds/decision", {
+        operation: job.operation,
+        id: job.id,
+        revision: job.revision,
+        planSha256: job.planSha256,
+        decision,
+      }),
+    );
+    if (
+      result.id !== job.id ||
+      result.revision !== job.revision ||
+      result.planSha256 !== job.planSha256
+    )
+      throw new Error("Broker receipt changed. Refresh before another action.");
+    return result;
+  }
+  async listBrokerDeployments(): Promise<PreviewBrokerDeploymentJob[]> {
+    if (this.password === null) throw new Error("Unlock installation controls first");
+    const now = this.ports.now ?? Date.now;
+    if (now() < this.brokerDeploymentRetryAt) return [];
+    try {
+      return z
+        .strictObject({ jobs: z.array(PreviewBrokerDeploymentJobSchema) })
+        .parse(await this.request("broker-deployments/query", {})).jobs;
+    } catch (error) {
+      if (error instanceof InstallationRouteUnavailable) {
+        this.brokerDeploymentRetryAt = now() + 60_000;
+        return [];
+      }
+      throw error;
+    }
+  }
+  async decideBrokerDeployment(
+    job: PreviewBrokerDeploymentJob,
+    decision: BrokerAction,
+  ): Promise<PreviewBrokerDeploymentJob> {
+    const result = PreviewBrokerDeploymentJobSchema.parse(
+      await this.request("broker-deployments/decision", {
+        operation: job.operation,
+        id: job.id,
+        revision: job.revision,
+        planSha256: job.planSha256,
+        decision,
+      }),
+    );
+    if (
+      result.id !== job.id ||
+      result.revision !== job.revision ||
+      result.planSha256 !== job.planSha256
+    )
+      throw new Error("Broker receipt changed. Refresh before another action.");
+    return result;
+  }
   async listMonitors(): Promise<PreviewMonitorJob[]> {
     if (this.password === null) throw new Error("Unlock installation controls first");
     const now = this.ports.now ?? Date.now;
