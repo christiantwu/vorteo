@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Give Linux desktop CI the existing browser CI budget for cold Metro compilation. Lifecycle and UI assertion deadlines remain unchanged.
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
 - Scope broker executor path fixtures and the filesystem-backed Host HTTP test to POSIX systems. Pure broker workflow tests continue to run on Windows.
 
 ## Unreleased - 2026-10-31
