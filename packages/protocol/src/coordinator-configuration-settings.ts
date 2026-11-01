@@ -1,3 +1,5 @@
+import { PreviewBrokerDeploymentConfigurationSchema } from "./preview-broker-deployment.js";
+import { PreviewBrokerConfigurationSchema } from "./preview-broker-maintenance.js";
 import { z } from "zod";
 import type { CoordinatorBootstrapPlan } from "./coordinator-bootstrap.js";
 import {
@@ -49,6 +51,16 @@ export const REVIEWED_CONFIGURATION_SETTINGS = {
     value: FactoryRuntimeAdoptionConfigurationSchema,
     renewal: true,
     legacyField: "factoryRuntimeAdoptionConfiguration",
+  },
+  previewBrokerDeployment: {
+    path: ["previewBrokerDeployment"],
+    value: PreviewBrokerDeploymentConfigurationSchema,
+    renewal: false,
+  },
+  previewBroker: {
+    path: ["previewBroker"],
+    value: PreviewBrokerConfigurationSchema,
+    renewal: false,
   },
   previewMonitor: {
     path: ["previewMonitor"],

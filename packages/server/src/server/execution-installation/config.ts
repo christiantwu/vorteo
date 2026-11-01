@@ -1,3 +1,5 @@
+import { PreviewBrokerDeploymentConfigurationSchema } from "@getpaseo/protocol/preview-broker-deployment";
+import { PreviewBrokerConfigurationSchema } from "@getpaseo/protocol/preview-broker-maintenance";
 import { PreviewMonitorConfigurationSchema } from "@getpaseo/protocol/preview-monitor-maintenance";
 import { NativeHelperConfigurationSchema } from "@getpaseo/protocol/native-helper-maintenance";
 import path from "node:path";
@@ -147,6 +149,8 @@ export const InstallationConfigSchema = z.strictObject({
   operationalTelemetryEnabled: z.literal(true).optional(),
   nativeHelper: NativeHelperConfigurationSchema.optional(),
   previewMonitor: PreviewMonitorConfigurationSchema.optional(),
+  previewBroker: PreviewBrokerConfigurationSchema.optional(),
+  previewBrokerDeployment: PreviewBrokerDeploymentConfigurationSchema.optional(),
   restartApprovalPolicy: z.strictObject({ hostRequestsAfter: z.string().datetime() }).optional(),
   containerSourceUpdates: ContainerSourceUpdatesSchema.optional(),
   /** Off by default. Full sign-in Claude accounts with Host-owned refresh; `true` opts in. */

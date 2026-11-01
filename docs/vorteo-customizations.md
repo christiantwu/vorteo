@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-10-31): the reviewed preview channel identity migration is integrated with the current lifecycle queue, recovery readers and exact approval interface. It preserves requests, reservations and policy while recording APFS volume trust separately from device numbers. It requires compatible deployed consumers and protected coordinator configuration before admission. The missing tracked consumer deployment adapter remains unfinished; no installed repair or preview readiness is claimed. See [channel maintenance](preview-broker-maintenance.md). README overview and onboarding are unchanged.
+
 Maintenance review (2026-10-31): the guarded publisher verifies active organization ownership for same-repository pull requests authored by the current account. Repository administrators and ordinary organization members gain no approval authority. Focused tests cover ownership, access failures and blocking reviews. The correction preserves date-based release versions. Runtime and README behavior are unchanged.
 
 Maintenance review (2026-10-31): the blocked-work review prompt requires reconciliation of every unfinished checklist item and continuation of independent authorized work. One unresolved blocker no longer instructs the agent to end its turn. Worker creation, owner pauses, budgets and admission holds remain restricted. Source change awaits installation; README overview and onboarding are unchanged.
@@ -2102,3 +2104,5 @@ Maintenance review: installer service files take their PATH from `scripts/instal
 Maintenance review: the Appearance theme row drops the built-in theme dropdown, including its System option; plugin themes keep a menu shown only when one is installed. The System appearance browser test is replaced one for one by a layout check; the test count is unchanged.
 
 Maintenance review: a systemd Host restarts immediately through `systemctl --user restart <unit>`; coordinator maintenance stays launchd-only and says so on systemd Hosts. Ported from #5 without its unavailable-restart label, since the restart now runs.
+
+Broker maintenance also has a separate eight-file consumer deployment target. Its protected native worker, participant scope, exact owner review and recovery readers are independent of channel trust migration. Deployment restores only brokers whose unchanged legacy channel pins still refuse request consumption; it does not establish a ready preview. See [broker maintenance](preview-broker-maintenance.md).

@@ -1,3 +1,4 @@
+import { BrokerDeploymentRefused } from "./preview-broker-deployment-workflow.js";
 import { localInstallationOrigin, localInstallationEnvironments } from "./local-access.js";
 import {
   SnapshotRestoreRequestSchema,
@@ -973,8 +974,13 @@ export function createInstallationServer(
       devReady,
     );
     void (async () => {
+      const brokerDeploymentAvailable = host && (await restarts.brokerDeploymentAvailable());
+      const brokerCompatible = host ? ((await executor.brokerCompatible?.()) ?? false) : false;
       const monitorCompatible = host ? ((await executor.monitorCompatible?.()) ?? false) : false;
       const coordinator = await coordinatorCapability();
+      const brokerAvailable = Boolean(
+        host && executor.validateBrokerPlan && executor.installBroker && brokerCompatible,
+      );
       return Promise.all(
         daemonTargets(config).map(async (target) => ({
           target,
@@ -1016,6 +1022,14 @@ export function createInstallationServer(
                 host &&
                 (daemonAutomation.activation("coordinator") || delegatedMaintenance)
               ),
+            },
+            previewBrokerDeployment: {
+              available: brokerDeploymentAvailable,
+              ownerApprovalRequired: true,
+            },
+            previewBroker: {
+              available: brokerAvailable,
+              ownerApprovalRequired: true,
             },
             previewMonitor: {
               available: Boolean(
@@ -1256,6 +1270,8 @@ export function createInstallationServer(
       delegatedHandler(job, delegation, now)?.state === "handling";
     const helpers = restarts.listHelpers();
     const monitors = restarts.listMonitors();
+    const brokers = restarts.listBrokers();
+    const brokerDeployments = restarts.listBrokerDeployments();
     const services = restarts.listServices();
     const sessionHosts = restarts.listSessionHosts();
     res.json({
@@ -1279,6 +1295,26 @@ export function createInstallationServer(
                   ["pending", "approved", "running"].includes(job.status) &&
                   job.reconciliation?.attempts === 3,
               ).length,
+            },
+          }
+        : {}),
+      ...(brokerDeployments.length
+        ? {
+            previewBrokerDeployment: {
+              requested: brokerDeployments.filter((job) => job.status === "pending").length,
+              queued: brokerDeployments.filter((job) => job.status === "approved").length,
+              running: brokerDeployments.filter((job) => job.status === "running").length,
+              recovery: brokerDeployments.filter((job) => job.stage === "recovery_required").length,
+            },
+          }
+        : {}),
+      ...(brokers.length
+        ? {
+            previewBroker: {
+              requested: brokers.filter((j) => j.status === "pending").length,
+              queued: brokers.filter((j) => j.status === "approved").length,
+              running: brokers.filter((j) => j.status === "running").length,
+              recovery: brokers.filter((j) => j.stage === "recovery_required").length,
             },
           }
         : {}),
@@ -1411,6 +1447,60 @@ export function createInstallationServer(
       return;
     }
     void executor.inspectMonitor().then((state) => res.json(state), next);
+  });
+  app.get("/api/installation/broker-deployment-requests/:id", (req, res) => {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(401);
+      return;
+    }
+    const job = restarts.listBrokerDeployments().find((item) => item.id === req.params.id);
+    if (!job) {
+      res.sendStatus(404);
+      return;
+    }
+    res.json(job);
+  });
+  app.post("/api/installation/broker-deployment-requests", (req, res, next) => {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(401);
+      return;
+    }
+    void restarts
+      .prepareBrokerDeployment(req.body, "host-agent")
+      .then((job) => res.status(201).json(job), next);
+  });
+  app.get("/api/installation/broker-rebind-requests/:id", (req, res) => {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(401);
+      return;
+    }
+    const job = restarts.listBrokers().find((j) => j.id === req.params.id);
+    if (!job) {
+      res.sendStatus(404);
+      return;
+    }
+    res.json(job);
+  });
+  app.post("/api/installation/broker-rebind-requests", (req, res, next) => {
+    if (
+      !matchesToken(extractHttpBearerToken(req.header("authorization")), config.hostAgentTokenHash)
+    ) {
+      res.sendStatus(401);
+      return;
+    }
+    if (!executor.validateBrokerPlan || !executor.installBroker || !executor.brokerCompatible) {
+      res.status(503).json({ error: "Preview broker channel maintenance unavailable" });
+      return;
+    }
+    void restarts
+      .prepareBroker(req.body, "host-agent")
+      .then((job) => res.status(201).json(job), next);
   });
   app.get("/api/installation/monitor-requests/:id", (req, res) => {
     if (
@@ -1788,6 +1878,27 @@ export function createInstallationServer(
   app.post("/api/installation/owner/maintenance-services/cancel", (req, res) => {
     const input = MaintenanceServiceCancellationSchema.parse(req.body);
     res.json(maintenanceServiceView(restarts.cancelService(input.id, input.revision)));
+  });
+  app.post("/api/installation/owner/broker-deployments/query", (_req, res) =>
+    res.json({ jobs: restarts.listBrokerDeployments() }),
+  );
+  app.post("/api/installation/owner/broker-deployments/decision", (req, res) => {
+    res.json(restarts.decideBrokerDeployment(req.body));
+    void restarts.drain().catch(() => logger.error("Consumer deployment journal failed"));
+  });
+  app.post("/api/installation/owner/broker-deployments/observe", (req, res, next) => {
+    const input = z.strictObject({ id: z.string().uuid() }).parse(req.body);
+    void restarts
+      .observeBrokerDeployment(input.id)
+      .then(() => res.json({ jobs: restarts.listBrokerDeployments() }), next);
+  });
+  app.post("/api/installation/owner/broker-rebinds/query", (_req, res) =>
+    res.json({ jobs: restarts.listBrokers() }),
+  );
+  app.post("/api/installation/owner/broker-rebinds/decision", (req, res) => {
+    const job = restarts.decideBroker(req.body);
+    res.json(job);
+    void restarts.drain().catch(() => logger.error("Broker lifecycle journal failed"));
   });
   app.post("/api/installation/owner/monitors/query", (_req, res) =>
     res.json({ jobs: restarts.listMonitors() }),
@@ -2305,6 +2416,7 @@ export function createInstallationServer(
     if (
       error instanceof ProfileSharingConflict ||
       error instanceof RestartRequestError ||
+      error instanceof BrokerDeploymentRefused ||
       error instanceof BootstrapRequestConflict
     ) {
       res.status(409).json({ error: error.message });

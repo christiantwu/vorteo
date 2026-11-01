@@ -27,6 +27,14 @@ const DESCRIPTIONS: Descriptions = {
     config === null
       ? "Disable new Factory startup adoption requests. Existing recovery requirements remain."
       : `Configure Factory startup adoption plan ${config.sha256}. Adopting startup still requires a separate approval.`,
+  previewBrokerDeployment: (config) =>
+    config === null
+      ? "Disable new broker consumer deployments. Retained recovery evidence remains."
+      : "Configure the protected broker pair and declared participant scope. Consumer replacement requires a separate exact approval; channel trust is unchanged.",
+  previewBroker: (config) =>
+    config === null
+      ? "Disable new broker trust migrations. Retained jobs and fences remain."
+      : "Configure manual broker channel identity migration for two exact protected configs. Trust activation requires a separate exact approval; no hostname or service change is included.",
   previewMonitor: (config) =>
     config === null
       ? "Disable new preview monitor requests. Existing receipts remain in history."

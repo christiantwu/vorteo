@@ -6,6 +6,14 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-10-31
 
+### Added
+
+- Add a separate tracked broker consumer deployment with exact owner review, native scheduler suppression, preserved file evidence and observation-only recovery. Channel trust approval and preview readiness remain separate.
+- Restore the reviewed preview channel identity migration workflow on the current installation code. Exact approval binds APFS volume and directory identities, retained configuration, and preservation evidence. Consumer deployment and coordinator activation remain separate prerequisites; this source change does not repair an installed broker by itself.
+- Validate the owner approval HTTP boundary using the test server's actual loopback origin, retaining rejection of agent credentials and foreign origins.
+
+## Unreleased - 2026-10-31
+
 ### Fixed
 
 - Recognize verified organization owners when delivering their own pull requests after a repository transfer. Repository administration alone remains insufficient; checks on the exact commit and blocking reviews still apply.

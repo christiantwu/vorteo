@@ -109,7 +109,15 @@ export function assertFrozenCoordinatorIdle(journal: unknown, childPids: unknown
  * It excludes recorded work, but cannot establish native process quiescence. */
 export function assertCoordinatorLifecycleIdle(journal: unknown): void {
   const work = coordinatorLifecycleWork(journal);
-  if (work.some((job) => job.target === "native-helper" || job.target === "preview-monitor"))
+  if (
+    work.some(
+      (job) =>
+        job.target === "native-helper" ||
+        job.target === "preview-monitor" ||
+        job.target === "preview-broker" ||
+        job.target === "preview-broker-deployment",
+    )
+  )
     throw new BootstrapCoordinatorBusy("Coordinator has unresolved helper installation work");
   if (work.length > 0)
     throw new BootstrapCoordinatorBusy("Coordinator has unresolved installation work");
@@ -118,13 +126,14 @@ export function assertCoordinatorLifecycleIdle(journal: unknown): void {
 export function coordinatorLifecycleWork(journal: unknown) {
   return parseLifecycleJournal(journal).filter((job) => {
     // A coordinator replacement must not cut a session host install or removal short either.
-    if (
-      job.target === "maintenance-controller" ||
-      job.target === "recovery-launcher" ||
-      job.target === "session-host"
-    )
+    if (["maintenance-controller", "recovery-launcher", "session-host"].includes(job.target))
       return job.status === "approved" || job.status === "running";
-    if (job.target === "native-helper" || job.target === "preview-monitor") {
+    if (
+      job.target === "native-helper" ||
+      job.target === "preview-monitor" ||
+      job.target === "preview-broker" ||
+      job.target === "preview-broker-deployment"
+    ) {
       return (
         ["approved", "running"].includes(job.status) ||
         (job.stage === "preparing" && job.status === "pending") ||
