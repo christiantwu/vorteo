@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): release 26.11.103 extends existing exact-path Git trust to registered Projects repositories whose root or .git ownership differs from the daemon account. This completes agent and terminal Git access for shared Linux projects without wildcard trust or ownership changes. Focused trust tests and a real two-UID Docker Git index-write check pass.
+
 Maintenance review (2026-11-01): release 26.11.102 aligns the CI routing contract with the macOS 15 file-observation job after runner migration. The installer and runtime are unchanged.
 
 Maintenance review (2026-11-01): release 26.11.101 moves remaining macOS 14 test and packaging jobs to macOS 15 after GitHub rejected the retired runner during release validation. Installer behavior is unchanged from 26.11.100.

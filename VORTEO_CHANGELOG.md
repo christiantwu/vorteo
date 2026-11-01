@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.103 - 2026-11-01
+
+### Installation
+
+- Registered shared repositories owned by the other Host or Dev account receive exact-path Git trust, so agents and terminals can use Git after Linux folder permissions are prepared. Same-owner repositories and repositories outside Projects keep their existing trust policy.
+
 ## 26.11.102 - 2026-11-01
 
 ### Maintenance
