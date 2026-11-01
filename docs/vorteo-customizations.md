@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): the Claude connection panel no longer offers a shared connection for the built-in provider, which the coordinator always refuses. It points to adding a Claude account.
+
 Maintenance review (2026-11-01): a failed packaged Claude CLI selection is no longer cached, so repairing a release does not need a process restart.
 
 Maintenance review (2026-11-01): the native Claude account stays usable in Dev containers, whose image sets CLAUDE_CONFIG_DIR for the whole daemon. Only a directory a binding chose differently from the daemon's own marks a bound account.
