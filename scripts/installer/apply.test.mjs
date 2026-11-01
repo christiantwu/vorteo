@@ -150,7 +150,7 @@ describe("apply", () => {
       expect(Object.keys(line).toSorted()).toEqual(
         expect.arrayContaining(["message", "status", "step"]),
       );
-      expect(["start", "done", "skip", "fail"]).toContain(line.status);
+      expect(["start", "progress", "done", "skip", "fail"]).toContain(line.status);
     }
     expect(
       lines.filter((line) => ["done", "skip"].includes(line.status)).map((line) => line.step),

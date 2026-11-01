@@ -21,10 +21,34 @@ function paint(enabled, code, text) {
  * Turns events into output lines. `write` receives finished text; with `animate` the
  * current step shows a spinner on its own line that is replaced when the step ends.
  */
-export function createRenderer({ write, animate = false, color = false, intervalMs = 80 }) {
+export function createRenderer({
+  write,
+  animate = false,
+  color = false,
+  intervalMs = 1000,
+  columns = () => process.stdout.columns || 120,
+}) {
   let active = null;
   let frame = 0;
   let timer = null;
+  let started = 0;
+  let lastOutput = null;
+  let detail = "";
+  let counter = "";
+  let draw = null;
+  const duration = (ms) => {
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  };
+  const status = () => {
+    const quiet =
+      lastOutput === null
+        ? "waiting for output"
+        : `last output ${duration(Date.now() - lastOutput)} ago`;
+    return `${counter}${duration(Date.now() - started)} elapsed | ${active} | ${
+      detail || quiet
+    }${detail ? `; ${quiet}` : ""}`;
+  };
   const state = { failed: null, result: null };
 
   const clearSpinner = () => {
@@ -43,17 +67,35 @@ export function createRenderer({ write, animate = false, color = false, interval
     start(event) {
       clearSpinner();
       active = label(event);
-      if (!animate) {
-        write(`  ${paint(color, 2, "…")} ${active}\n`);
-        return;
-      }
-      const draw = () => {
-        write(`\r  ${paint(color, 36, SPINNER[frame % SPINNER.length])} ${active}\u001b[K`);
-        frame++;
+      counter = event.index ? `[${event.index}/${event.total}] ` : "";
+      started = Date.now();
+      lastOutput = null;
+      detail = "";
+      draw = () => {
+        if (animate) {
+          // Stay on one physical line so carriage return never leaves wrapped debris.
+          const width = Math.max(1, columns() - 1);
+          const elapsed = `${counter}${duration(Date.now() - started)} elapsed`;
+          const activity = detail || active;
+          const quiet =
+            lastOutput === null ? "" : ` | output ${duration(Date.now() - lastOutput)} ago`;
+          const compact = `${elapsed} | ${activity}${quiet}`;
+          const text = `  ${SPINNER[frame++ % SPINNER.length]} ${width < 100 ? compact : status()}`;
+          write(`\r${text.slice(0, width)}\u001b[K`);
+        } else {
+          write(`  … ${status()}\n`);
+        }
       };
-      draw();
-      timer = setInterval(draw, intervalMs);
+      if (animate) draw();
+      else write(`  ${paint(color, 2, "…")} ${active}\n`);
+      timer = setInterval(draw, animate ? intervalMs : 15000);
       timer.unref?.();
+    },
+    progress(event) {
+      if (!active) return;
+      if (event.outputBytes > 0) lastOutput = Date.now();
+      if (event.detail) detail = event.detail;
+      if (animate) draw();
     },
     done(event) {
       line(`  ${paint(color, 32, "✓")} ${label(event)}`);

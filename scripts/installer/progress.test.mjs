@@ -61,7 +61,7 @@ describe("installer progress", () => {
       ],
       { animate: true },
     );
-    assert.ok(output.startsWith("\r  ⠋ Starting the Host"));
+    assert.ok(output.startsWith("\r  ⠋ 0:00 elapsed | Starting the Host"));
     assert.ok(output.endsWith("\r\u001b[K  ✓ Started the Host\n"));
   });
 
@@ -84,4 +84,82 @@ describe("installer progress", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+test("live progress reports elapsed time and quiet output without claiming a stall", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1000 });
+  let output = "";
+  const renderer = createRenderer({
+    write: (text) => (output += text),
+    animate: true,
+  });
+  renderer.handle(
+    JSON.stringify({
+      step: "dev-images",
+      status: "start",
+      message: "Building",
+      index: 3,
+      total: 12,
+    }),
+  );
+  t.mock.timers.tick(65000);
+  assert.match(output, /3\/12.*1:05 elapsed.*Building/);
+  renderer.handle(
+    JSON.stringify({
+      step: "dev-images",
+      status: "progress",
+      detail: "Docker stage build 4/8",
+      outputBytes: 1024,
+    }),
+  );
+  t.mock.timers.tick(2000);
+  assert.match(output, /Docker stage build 4\/8/);
+  assert.match(output, /last output 0:02 ago/);
+  renderer.handle(JSON.stringify({ step: "dev-images", status: "done", message: "Built" }));
+  const finished = output;
+  t.mock.timers.tick(30000);
+  assert.equal(output, finished);
+  renderer.finish();
+});
+
+test("redirected progress prints periodic heartbeats and stops at EOF", (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1000 });
+  let output = "";
+  const renderer = createRenderer({ write: (text) => (output += text) });
+  renderer.handle(JSON.stringify({ step: "build", status: "start", message: "Building" }));
+  t.mock.timers.tick(30000);
+  assert.match(output, /0:30 elapsed/);
+  assert.ok(!output.includes("\u001b"));
+  renderer.finish();
+  const ended = output;
+  t.mock.timers.tick(30000);
+  assert.equal(output, ended);
+});
+
+test("a narrow terminal keeps the counter and latest Docker stage visible", () => {
+  let output = "";
+  const renderer = createRenderer({
+    write: (text) => (output += text),
+    animate: true,
+    columns: () => 60,
+  });
+  renderer.handle(
+    JSON.stringify({
+      status: "start",
+      message: "Building the Dev container image and network gate",
+      index: 4,
+      total: 15,
+    }),
+  );
+  renderer.handle(
+    JSON.stringify({
+      status: "progress",
+      detail: "Docker stage build 4/8",
+      outputBytes: 10,
+    }),
+  );
+  const last = output.split("\r").at(-1).replaceAll("\u001b[K", "");
+  assert.match(last, /4\/15.*0:00 elapsed.*build 4\/8/);
+  assert.ok(last.length < 60);
+  renderer.finish();
 });

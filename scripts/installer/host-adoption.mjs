@@ -1,3 +1,4 @@
+import { installationTiming } from "./plan.mjs";
 // Upgrades a Host installation made before the one-command installer
 // (scripts/install-execution-host.mjs `install`, from a hand-written plan) in place.
 // Its root holds installation.json, coordinator.json, owner-password, releases/, state/
@@ -453,6 +454,7 @@ export function summarizeAdoption(plan) {
   const { adoption, paths } = plan;
   const lines = [
     `Upgrade the existing installation "${plan.name}" in ${paths.root} in place. Its identity, owner password, homes, agents and data stay where they are.`,
+    installationTiming(plan),
     `Source: ${paths.source}, a checkout at ${plan.revision.slice(0, 12)}.`,
   ];
   lines.push(

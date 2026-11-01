@@ -3,7 +3,13 @@ import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { buildCoordinatorConfig, gateRoutes, interfaceOrigins } from "./coordinator-config.mjs";
 import { fakeContext } from "./fakes.mjs";
-import { chooseSubnet, createPlan, subnetsOverlap, validateAnswers } from "./plan.mjs";
+import {
+  chooseSubnet,
+  createPlan,
+  subnetsOverlap,
+  validateAnswers,
+  installationTiming,
+} from "./plan.mjs";
 import { choosePorts } from "./ports.mjs";
 
 function setup(options = {}) {
@@ -371,4 +377,10 @@ describe("coordinator configuration contract", () => {
       }
     },
   );
+});
+
+test("installation estimates distinguish Dev builds from Host-only installs", () => {
+  expect(installationTiming({ devContainer: true })).toContain("15 to 60 minutes");
+  expect(installationTiming({ devContainer: false })).toContain("5 to 20 minutes");
+  expect(installationTiming({ devContainer: true })).toContain("can take longer");
 });

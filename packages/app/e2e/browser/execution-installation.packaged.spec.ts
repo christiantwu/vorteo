@@ -529,9 +529,12 @@ test("welcome signs in with the owner password and restores both environments", 
   await expect(page.getByRole("dialog")).toHaveCount(0);
   const form = page.getByTestId("installation-welcome");
   await expect(form).toBeVisible();
-  await expect(form.getByTestId("installation-password-file")).toHaveText(
-    path.join(root, "owner-password"),
-  );
+  await expect(form.getByText("Find your password", { exact: true })).toBeVisible();
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  const copyCommand = form.getByTestId("installation-password-copy-command");
+  await copyCommand.click();
+  await expect(page.getByTestId("installation-command-copied")).toContainText("Command copied");
+  await expect(copyCommand).toHaveText("Copy command");
   await expect(form.getByTestId("installation-password-command")).toHaveText(
     `pbcopy < '${path.join(root, "owner-password")}'`,
   );

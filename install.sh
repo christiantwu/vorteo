@@ -1205,7 +1205,14 @@ vorteo_install() {
   }
   trap 'trap - INT TERM; vorteo_stop_tree $$; exit 130' INT TERM
 
-  say "${bold}Vorteo installer${reset}"
+  cat <<'VORTEO_BANNER'
+ __     _____  ____ _____ _____ ___
+ \ \   / / _ \|  _ \_   _| ____/ _ \
+  \ \ / / | | | |_) || | |  _|| | | |
+   \ V /| |_| |  _ < | | | |__| |_| |
+    \_/  \___/|_| \_\|_| |_____\___/
+VORTEO_BANNER
+  say "${bold}              Vorteo installer${reset}"
 
   # Prerequisites the installer itself needs --------------------------------------------
 

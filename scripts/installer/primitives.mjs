@@ -2,7 +2,14 @@
 // scripts/install-execution-host.mjs. Everything here is free of installation policy.
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { isInsideFolder } from "../lib/projects-folder.mjs";
@@ -45,11 +52,25 @@ const running = new Set();
 
 /** Runs a command without a shell and returns its trimmed standard output. */
 export async function run(command, args, options = {}) {
-  const { input, ...execOptions } = options;
+  const { input, onOutput, ...execOptions } = options;
   const pending = execute(command, args, {
     maxBuffer: 32 * 1024 * 1024,
     ...execOptions,
   });
+  let outputError = null;
+  if (onOutput) {
+    const receive = (chunk) => {
+      if (outputError) return;
+      try {
+        onOutput(chunk);
+      } catch (error) {
+        outputError = error;
+        pending.child.kill();
+      }
+    };
+    pending.child.stdout.on("data", receive);
+    pending.child.stderr.on("data", receive);
+  }
   const inputWritten =
     input === undefined
       ? Promise.resolve()
@@ -73,6 +94,7 @@ export async function run(command, args, options = {}) {
         throw error;
       }),
     ]);
+    if (outputError) throw outputError;
     if (result.status === "rejected") throw result.reason;
     if (written.status === "rejected") throw written.reason;
     return result.value.stdout.trim();
@@ -88,17 +110,23 @@ export function stopRunning(signal = "SIGTERM") {
 
 /** Runs a long build step, keeping its output in a private log instead of the terminal. */
 export async function build(command, args, cwd, log, environment = {}, runCommand = run) {
+  privateWrite(log, "");
+  let streamed = false;
   try {
-    privateWrite(
-      log,
-      await runCommand(command, args, {
-        cwd,
-        timeout: 30 * 60_000,
-        env: { ...process.env, ...environment },
-      }),
-    );
+    const output = await runCommand(command, args, {
+      cwd,
+      timeout: 30 * 60_000,
+      env: { ...process.env, ...environment },
+      onOutput(chunk) {
+        streamed = true;
+        appendFileSync(log, chunk);
+      },
+    });
+    // Test adapters and older callers can return output without streaming it.
+    if (!streamed) appendFileSync(log, output);
+    return output;
   } catch (error) {
-    privateWrite(log, `${error.stdout ?? ""}\n${error.stderr ?? ""}`);
+    if (!streamed) appendFileSync(log, `${error.stdout ?? ""}\n${error.stderr ?? ""}`);
     throw new Error(`Build failed; inspect ${log}`, { cause: error });
   }
 }
