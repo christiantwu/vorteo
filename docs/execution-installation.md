@@ -246,6 +246,14 @@ Profile and settings admission still verifies the coordinator response against t
 
 An installation can name one Projects folder, such as `~/dev`, that holds every newly added, created or cloned project. The Host and the Dev container see it at the same absolute path, so a project path means the same folder in both environments and needs no translation. The container sees that path through an identical bind mount, or, in a container created before the folder existed, through a symlink to the folder's older mount.
 
+On Linux, the installer and `repair` verify that Host and Dev can create and edit each other's project files. When their numeric user IDs differ, the installer grants both accounts explicit POSIX ACL entries throughout the selected folder. Owners stay unchanged. Existing files receive owner-equivalent access, including read-only and executable permissions, while unrelated users and groups keep their existing effective ACL access. New directories inherit sharing defaults for these two accounts; where no defaults existed, other accounts receive no inherited access. An application that explicitly creates or changes a file to mode `0600` can still restrict sharing.
+
+Repair requires a Dev image with the ACL tools supplied by this release; updating installer source alone does not add them to an older image. Fresh installations and legacy wrapping build the required image before this step.
+
+Keep the Projects tree quiet during permission preparation. Symlink targets are untouched. The installer refuses foreign-owned files, special files, nested filesystems and files with hard links outside the selected folder before changing existing permissions. The filesystem must support POSIX ACLs. Move unsupported entries outside the selected folder or choose a suitable Projects folder, then retry; the installer never fixes sharing by recursively changing ownership.
+
+Private permission receipts remain under `<installation root>/permissions-backups`, outside the container mounts and retained after uninstall. A failed update restores unchanged objects from its receipt. On retry, an interrupted update is recovered before another starts. If an object or its permissions changed in the meantime, recovery preserves that change and stops for inspection of the receipt's `retainedChanges`. Completed sharing permissions remain after uninstall because the Projects folder belongs to the owner.
+
 Each daemon reads `$PASEO_HOME/projects-folder.json`:
 
 ```json

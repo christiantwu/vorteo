@@ -417,6 +417,7 @@ export async function repair(context, emit) {
   // dev-create and dev-adopt start an existing deployment again instead of creating one.
   const steps = [
     ...plan.steps.filter((step) => ["dev-create", "dev-adopt", "dev-identity"].includes(step)),
+    ...(plan.devContainer ? ["projects-access"] : []),
     "ready",
     ...(plan.remote.mode === "tailscale" ? ["remote"] : []),
   ];

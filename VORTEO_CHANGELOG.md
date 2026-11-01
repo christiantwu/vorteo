@@ -4,6 +4,13 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.100 - 2026-11-01
+
+### Installation
+
+- Linux installations and legacy upgrades prepare shared Projects permissions for different Host and Dev user IDs without changing ownership. Private recovery receipts preserve prior ACLs, failed updates roll back unchanged objects, and actual bidirectional file access is checked before readiness. Repair includes this check for older installation plans.
+- Release acceptance covers shared project writes, ACL recovery, unrelated access, read-only files, setgid directories and refusal of outside hard links or special files. Document permission inheritance and retained backups.
+
 ## Unreleased - 2026-11-01
 
 ### Maintenance

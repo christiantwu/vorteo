@@ -1,5 +1,7 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): release 26.11.100 prepares Linux shared Projects use explicit ACLs for Host and Dev with different numeric user IDs, retaining file owners and unrelated effective access. New and adopted installations verify bidirectional writes; repair adds the step for old plans. Private append-only permission receipts survive uninstall and support conditional rollback. Symlinks stay untouched; foreign-owned entries, special files, nested filesystems and outside hard links are refused. README and installation documentation describe inheritance, filesystem requirements and recovery.
+
 Maintenance review (2026-11-01): installer release work incorporates the current main branch, including the accepted preview channel migration and its validation fixes. Existing installation fixes and pending shared Projects acceptance are retained.
 
 Maintenance review (2026-10-31): Linux cleanup makes each emptied disposable mount root traversable before the Host removes it. This fixes removal of a Dev-owned directory with mode 0700 after its contents were already deleted. Adopted deployments, Projects and keep-data remain excluded from cleanup.

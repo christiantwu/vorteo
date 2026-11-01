@@ -85,6 +85,8 @@ On Windows, the installer probably won't work yet, even inside WSL. Full WSL sup
 
 Every later change happens in the interface, from connecting accounts to updating Vorteo. An older installation, including a container-only one, upgrades with the same command and keeps its Dev environment, agents and files. See [host and container execution](docs/execution-installation.md) for what it installs.
 
+On Linux, Host and Dev share the selected Projects folder through explicit file permissions while preserving ownership. The installer checks access in both directions and retains permission backups. See [Projects folder](docs/execution-installation.md#projects-folder) for filesystem requirements and recovery.
+
 ### Instructions for installation agents
 
 Run the command. If it exits with status 3, it has printed the questions it needs answered: ask the owner each one, then rerun it with the flags it printed. When it finishes, give the owner the address it printed. Leave provider sign-in for the interface.

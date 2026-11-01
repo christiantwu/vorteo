@@ -6,6 +6,7 @@
 //   wait-ready <scenario>           poll `status --json` until the expected environments are ready
 //   assert-access <scenario>        welcome page, owner-access metadata and owner sign-in on localhost
 //   assert-gate                     Dev isolation and gate audit log (Linux, Dev container scenarios)
+//   assert-shared-projects          Host and Dev can create and edit shared project files
 //   assert-identity                 Dev kept the legacy deployment's server-id
 //   assert-no-docker                the Host-only install never invoked Docker
 //   uninstall                       `vorteo uninstall` removes the services it added
@@ -13,9 +14,10 @@
 //
 // Secrets: the owner password is read from its file, masked in GitHub logs and
 // never printed. Diagnostics print status and service state, not credentials.
+import { randomUUID } from "node:crypto";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -486,6 +488,39 @@ async function assertGate() {
   }
 }
 
+function assertSharedProjects() {
+  const container = devContainer(readStatus());
+  const directory = path.join(CONTRACT.projectsFolder, `.install-write-check-${randomUUID()}`);
+  mkdirSync(directory);
+  const hostFile = path.join(directory, "host.txt");
+  const devFile = path.join(directory, "dev.txt");
+  try {
+    writeFileSync(hostFile, "host");
+    docker([
+      "exec",
+      "--user",
+      "paseo",
+      container,
+      "node",
+      "-e",
+      "const fs=require('fs'); process.umask(0o077); fs.appendFileSync(process.argv[1],'+dev'); " +
+        "fs.writeFileSync(process.argv[2],'dev');",
+      hostFile,
+      devFile,
+    ]);
+    if (readFileSync(hostFile, "utf8") !== "host+dev")
+      fail("Dev could not edit the Host-created project file.");
+    if (readFileSync(devFile, "utf8") !== "dev")
+      fail("Host could not read the Dev-created project file.");
+    writeFileSync(devFile, "dev+host");
+    const result = docker(["exec", "--user", "paseo", container, "cat", devFile]).stdout;
+    if (result !== "dev+host") fail("Host could not edit the Dev-created project file.");
+    step("Host and Dev can create, read and edit each other's shared project files");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 // Legacy identity -----------------------------------------------------------
 
 function assertIdentity() {
@@ -588,6 +623,7 @@ const COMMANDS = {
   "assert-access": assertAccess,
   "assert-gate": assertGate,
   "assert-identity": assertIdentity,
+  "assert-shared-projects": assertSharedProjects,
   "assert-no-docker": assertNoDocker,
   uninstall,
   diagnose,

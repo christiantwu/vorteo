@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -47,6 +48,16 @@ function machine({ platform = "darwin", healthy = true, extraRules = [] } = {}) 
           "PASEO_INSTANCE=paseo-0123456789ab\nPASEO_PASSWORD=dev-password\n",
         );
       },
+    ],
+    [(command, args) => command === "docker" && args[0] === "exec" && args.includes("id"), "501"],
+    [
+      (command, args) =>
+        command === "docker" &&
+        args[0] === "exec" &&
+        args.includes("-e") &&
+        args.some((arg) => arg.includes(".vorteo-sharing-")),
+      (args) =>
+        execFileSync(process.execPath, args.slice(args.indexOf("node") + 1), { encoding: "utf8" }),
     ],
     [(command, args) => command === "docker" && args[0] === "exec" && args.includes("-e"), DEV_ID],
     [
@@ -141,9 +152,9 @@ describe("apply", () => {
       );
       expect(["start", "done", "skip", "fail"]).toContain(line.status);
     }
-    expect(lines.filter((line) => line.status === "done").map((line) => line.step)).toEqual(
-      plan.steps,
-    );
+    expect(
+      lines.filter((line) => ["done", "skip"].includes(line.status)).map((line) => line.step),
+    ).toEqual(plan.steps);
     expect(lines.at(-1)).toEqual({
       result: {
         origin: "https://box.example.ts.net:44444",

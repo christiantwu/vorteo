@@ -62,10 +62,18 @@ jobs:
             type=gha,scope=install-tests
           cache-to: type=gha,scope=install-tests,mode=max
 
+      - name: Linux project permission recovery
+        run: >-
+          docker run --rm --network none --mount type=volume,dst=/share
+          --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/installer,dst=/checks,readonly"
+          --entrypoint python3 "$VORTEO_E2E_DEV_IMAGE"
+          -I /checks/projects-permissions.test.py
+
       - name: Install with Dev in gate mode
         run: node scripts/release/e2e/install-e2e.mjs install full
       - run: node scripts/release/e2e/install-e2e.mjs wait-ready full
       - run: node scripts/release/e2e/install-e2e.mjs assert-access full
+      - run: node scripts/release/e2e/install-e2e.mjs assert-shared-projects
       - name: Dev isolation and gate log
         run: node scripts/release/e2e/install-e2e.mjs assert-gate
       - name: Uninstall before the legacy wrap
@@ -106,6 +114,7 @@ jobs:
           node scripts/release/e2e/install-e2e.mjs wait-ready wrap
           node scripts/release/e2e/install-e2e.mjs assert-identity
           node scripts/release/e2e/install-e2e.mjs assert-access wrap
+          node scripts/release/e2e/install-e2e.mjs assert-shared-projects
 
       - name: Diagnostics
         if: failure()

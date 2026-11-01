@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { writeProjectsFolderSettings } from "../lib/projects-folder.mjs";
+import { projectsAccess } from "./projects-access.mjs";
 import { writeSystemSource } from "../lib/system-source.mjs";
 import {
   buildCoordinatorConfig,
@@ -57,6 +58,7 @@ export const STEP_TITLES = {
   "dev-create": "Creating the Dev container behind the gate",
   "dev-adopt": "Moving the existing Dev container behind the gate",
   "dev-identity": "Reading the Dev identity",
+  "projects-access": "Preparing shared project permissions",
   release: "Building the Host release",
   "host-config": "Writing the Host and coordinator configuration",
   "dev-pair": "Pairing Dev with the installation",
@@ -624,6 +626,7 @@ export const STEPS = {
   "dev-create": devCreate,
   "dev-adopt": devAdopt,
   "dev-identity": devIdentity,
+  "projects-access": projectsAccess,
   release,
   "host-config": hostConfig,
   "dev-pair": devPair,

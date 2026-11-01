@@ -214,7 +214,9 @@ export function planSteps({ devContainer, adopt, remote }) {
     "prepare",
     "identity",
     ...(remote === "tailscale" ? ["tailscale"] : []),
-    ...(devContainer ? ["dev-images", adopt ? "dev-adopt" : "dev-create", "dev-identity"] : []),
+    ...(devContainer
+      ? ["dev-images", adopt ? "dev-adopt" : "dev-create", "dev-identity", "projects-access"]
+      : []),
     "release",
     "host-config",
     ...(devContainer ? ["dev-pair"] : []),
@@ -462,6 +464,10 @@ export function summarizePlan(plan) {
   );
   lines.push(`Projects folder: ${plan.paths.projectsFolder}, created if missing.`);
   if (plan.devContainer) {
+    if (plan.platform === "linux")
+      lines.push(
+        "Linux Projects sharing grants Host and Dev explicit folder permissions without changing owners. Existing files receive owner-equivalent access; new files inherit private sharing defaults. Permission backups stay in the installation permissions-backups folder after uninstall.",
+      );
     lines.push(
       plan.kind === "adopt"
         ? `Dev moves to gate mode with automatic rollback; its network then goes only through the gate on ${plan.dev.subnet}.`
