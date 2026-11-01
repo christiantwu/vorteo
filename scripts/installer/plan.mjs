@@ -5,7 +5,7 @@ import path from "node:path";
 import { detectExisting, detectPrerequisites, tailscaleStatus } from "./detect.mjs";
 import { servicePath } from "./service-path.mjs";
 import { DEFAULT_PORTS, choosePorts, servePortsInUse } from "./ports.mjs";
-import { InstallerError, assertProjectsFolderSeparate } from "./primitives.mjs";
+import { InstallerError, assertProjectsFolderSeparate, shellQuote } from "./primitives.mjs";
 import { isInsideFolder } from "../lib/projects-folder.mjs";
 
 export const PLAN_VERSION = 1;
@@ -214,7 +214,9 @@ export function planSteps({ devContainer, adopt, remote }) {
     "prepare",
     "identity",
     ...(remote === "tailscale" ? ["tailscale"] : []),
-    ...(devContainer ? ["dev-images", adopt ? "dev-adopt" : "dev-create", "dev-identity"] : []),
+    ...(devContainer
+      ? ["dev-images", adopt ? "dev-adopt" : "dev-create", "dev-identity", "projects-access"]
+      : []),
     "release",
     "host-config",
     ...(devContainer ? ["dev-pair"] : []),
@@ -236,7 +238,7 @@ function assertLayout(answers, root, adopt) {
   if (adopt && (isInsideFolder(adopt.path, root) || isInsideFolder(root, adopt.path)))
     throw new InstallerError(
       `The existing Dev deployment in ${adopt.path} overlaps the installation folder ${root}.`,
-      `Plan again with --root ${path.join(path.dirname(root), "vorteo-installation")} so both stay where they are.`,
+      `Rerun the installer with the existing deployment explicitly selected: curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/install.sh | VORTEO_LEGACY_DEPLOYMENT=${shellQuote(adopt.path)} bash -s -- --root ${shellQuote(path.join(path.dirname(root), "vorteo-installation"))}`,
     );
   const protectedPaths = [root, answers.sourceDirectory, ...(adopt ? [adopt.path] : [])];
   try {
@@ -462,6 +464,10 @@ export function summarizePlan(plan) {
   );
   lines.push(`Projects folder: ${plan.paths.projectsFolder}, created if missing.`);
   if (plan.devContainer) {
+    if (plan.platform === "linux")
+      lines.push(
+        "Linux Projects sharing grants Host and Dev explicit folder permissions without changing owners. Existing files receive owner-equivalent access; new files inherit private sharing defaults. Permission backups stay in the installation permissions-backups folder after uninstall.",
+      );
     lines.push(
       plan.kind === "adopt"
         ? `Dev moves to gate mode with automatic rollback; its network then goes only through the gate on ${plan.dev.subnet}.`

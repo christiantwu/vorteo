@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      VORTEO_E2E_STATE: ${{ github.workspace }}/../vorteo-e2e
+      VORTEO_E2E_STATE: ${{ github.workspace }}/.runtime/vorteo-e2e
       VORTEO_E2E_DEV_IMAGE: vorteo-dev:install-tests
       VORTEO_E2E_LEGACY_DEPLOYMENT: ${{ github.workspace }}/../legacy-deployment
     steps:
@@ -62,10 +62,18 @@ jobs:
             type=gha,scope=install-tests
           cache-to: type=gha,scope=install-tests,mode=max
 
+      - name: Linux project permission recovery
+        run: >-
+          docker run --rm --network none --mount type=volume,dst=/share
+          --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/installer,dst=/checks,readonly"
+          --entrypoint python3 "$VORTEO_E2E_DEV_IMAGE"
+          -I /checks/projects-permissions.test.py
+
       - name: Install with Dev in gate mode
         run: node scripts/release/e2e/install-e2e.mjs install full
       - run: node scripts/release/e2e/install-e2e.mjs wait-ready full
       - run: node scripts/release/e2e/install-e2e.mjs assert-access full
+      - run: node scripts/release/e2e/install-e2e.mjs assert-shared-projects
       - name: Dev isolation and gate log
         run: node scripts/release/e2e/install-e2e.mjs assert-gate
       - name: Uninstall before the legacy wrap
@@ -106,10 +114,19 @@ jobs:
           node scripts/release/e2e/install-e2e.mjs wait-ready wrap
           node scripts/release/e2e/install-e2e.mjs assert-identity
           node scripts/release/e2e/install-e2e.mjs assert-access wrap
+          node scripts/release/e2e/install-e2e.mjs assert-shared-projects
 
       - name: Diagnostics
         if: failure()
         run: node scripts/release/e2e/install-e2e.mjs diagnose
+      - name: Upload install diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-diagnostics-${{ runner.os }}
+          path: ${{ env.VORTEO_E2E_STATE }}/diagnostics
+          retention-days: 7
+          if-no-files-found: warn
 
   macos:
     name: macos (Host only, launchd)
@@ -117,8 +134,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
     env:
-      VORTEO_E2E_STATE: ${{ github.workspace }}/../vorteo-e2e
-      VORTEO_E2E_DOCKER_LOG: ${{ github.workspace }}/../vorteo-e2e/docker-calls.log
+      VORTEO_E2E_STATE: ${{ github.workspace }}/.runtime/vorteo-e2e
+      VORTEO_E2E_DOCKER_LOG: ${{ github.workspace }}/.runtime/vorteo-e2e/docker-calls.log
     steps:
       - uses: actions/checkout@v4
         with:
@@ -138,3 +155,11 @@ jobs:
       - name: Diagnostics
         if: failure()
         run: node scripts/release/e2e/install-e2e.mjs diagnose
+      - name: Upload install diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-diagnostics-${{ runner.os }}
+          path: ${{ env.VORTEO_E2E_STATE }}/diagnostics
+          retention-days: 7
+          if-no-files-found: warn

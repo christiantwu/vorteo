@@ -4,6 +4,37 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.103 - 2026-11-01
+
+### Installation
+
+- Registered shared repositories owned by the other Host or Dev account receive exact-path Git trust, so agents and terminals can use Git after Linux folder permissions are prepared. Same-owner repositories and repositories outside Projects keep their existing trust policy.
+
+## 26.11.102 - 2026-11-01
+
+### Maintenance
+
+- Align the CI routing contract with the supported macOS 15 file-observation job name.
+
+## 26.11.101 - 2026-11-01
+
+### Maintenance
+
+- Move remaining macOS 14 CI, Nix and desktop release jobs to macOS 15 because GitHub is retiring the older runner image. Prepare the final installation release with unchanged Linux sharing behavior.
+
+## 26.11.100 - 2026-11-01
+
+### Installation
+
+- Linux installations and legacy upgrades prepare shared Projects permissions for different Host and Dev user IDs without changing ownership. Private recovery receipts preserve prior ACLs, failed updates roll back unchanged objects, and actual bidirectional file access is checked before readiness. Repair includes this check for older installation plans.
+- Release acceptance covers shared project writes, ACL recovery, unrelated access, read-only files, setgid directories and refusal of outside hard links or special files. Document permission inheritance and retained backups.
+
+## Unreleased - 2026-11-01
+
+### Maintenance
+
+- Integrate current main and its preview channel changes into installer release validation
+
 ## Unreleased - 2026-10-31
 
 ### Maintenance
@@ -47,6 +78,103 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 - Add a separate tracked broker consumer deployment with exact owner review, native scheduler suppression, preserved file evidence and observation-only recovery. Channel trust approval and preview readiness remain separate.
 - Restore the reviewed preview channel identity migration workflow on the current installation code. Exact approval binds APFS volume and directory identities, retained configuration, and preservation evidence. Consumer deployment and coordinator activation remain separate prerequisites; this source change does not repair an installed broker by itself.
 - Validate the owner approval HTTP boundary using the test server's actual loopback origin, retaining rejection of agent credentials and foreign origins.
+
+## Unreleased - 2026-10-31
+
+### Fixed
+
+- Allow Linux uninstall to remove empty Dev-owned private directories after clearing their disposable contents
+
+## Unreleased - 2026-10-31
+
+### Fixed
+
+- Prevent Dev from reaching Host services through its internal Docker bridge address
+
+## 26.10.3102 - 2026-10-31
+
+### Maintenance
+
+- Prepare the installation release with private-home Dev client provisioning fixed
+
+## Unreleased - 2026-10-31
+
+### Fixed
+
+- Write the Dev installation client as the home owner so private Linux homes work with restricted container permissions
+
+## 26.10.3101 - 2026-10-31
+
+### Fixed
+
+- Preserve legacy Dev selection in the recovery command when its deployment overlaps the new installation folder
+
+### Maintenance
+
+- Prepare the installation release with Host-only Docker detection disabled
+
+## Unreleased - 2026-10-31
+
+### Fixed
+
+- Skip Docker discovery and prerequisite probes when a Host-only install is requested
+
+## 26.10.3100 - 2026-10-31
+
+### Maintenance
+
+- Prepare the first tested one-command installation release for macOS and Linux
+
+## Unreleased - 2026-10-31
+
+### Fixed
+
+- Remove container-owned private data during Linux uninstall while retaining recovery state if cleanup fails
+
+### Maintenance
+
+- Check installation status through the installed command and track only Vorteo services during uninstall acceptance
+- Let the gate isolation control server answer while its probe runs
+
+## Unreleased - 2026-10-31
+
+### Fixed
+
+- Give Host installation builds a 4 GiB JavaScript heap default to prevent server compilation failures on smaller macOS machines
+
+## Unreleased - 2026-10-31
+
+### Fixed
+
+- Refuse to initialize an inaccessible populated container home instead of changing its ownership
+
+## Unreleased - 2026-10-31
+
+### Fixed
+
+- Initialize private Linux container homes as their owner without expanding container capabilities
+
+### Maintenance
+
+- Verify that legacy upgrades preserve the original home and workspace mounts and existing user files
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
+- Resolve the diagnostic directory from the workflow workspace before a runner is assigned
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
+- Store installation diagnostics in the runner temporary directory accepted by artifact uploads
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
+- Capture Host build and container logs when clean-machine installation tests fail
 
 ## Unreleased - 2026-10-31
 

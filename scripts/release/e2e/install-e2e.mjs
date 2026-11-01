@@ -6,6 +6,7 @@
 //   wait-ready <scenario>           poll `status --json` until the expected environments are ready
 //   assert-access <scenario>        welcome page, owner-access metadata and owner sign-in on localhost
 //   assert-gate                     Dev isolation and gate audit log (Linux, Dev container scenarios)
+//   assert-shared-projects          Host and Dev can create and edit shared project files
 //   assert-identity                 Dev kept the legacy deployment's server-id
 //   assert-no-docker                the Host-only install never invoked Docker
 //   uninstall                       `vorteo uninstall` removes the services it added
@@ -13,13 +14,16 @@
 //
 // Secrets: the owner password is read from its file, masked in GitHub logs and
 // never printed. Diagnostics print status and service state, not credentials.
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { execFile, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { isMainModule } from "../../is-main-module.mjs";
 
+const execute = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const stateDir = process.env.VORTEO_E2E_STATE ?? path.join(os.tmpdir(), "vorteo-e2e");
 
@@ -28,7 +32,6 @@ const stateDir = process.env.VORTEO_E2E_STATE ?? path.join(os.tmpdir(), "vorteo-
 export const CONTRACT = {
   home: path.join(os.homedir(), "vorteo"),
   passwordFile: path.join(os.homedir(), "vorteo", "host", "owner-password"),
-  installedCli: path.join(os.homedir(), "vorteo", "source", "scripts", "installer", "main.mjs"),
   vorteoCommand: path.join(os.homedir(), ".local", "bin", "vorteo"),
   projectsFolder: path.join(os.homedir(), "dev"),
   // `--yes` takes every default: Dev container on, name Vorteo, Projects ~/dev.
@@ -114,13 +117,13 @@ function serviceNames() {
       .slice(1)
       .map((line) => line.split("\t")[2])
       .filter(Boolean);
-    return [...new Set(labels)];
+    return [...new Set(labels)].filter((name) => name.startsWith("local.vorteo."));
   }
   if (process.env.VORTEO_E2E_SERVICE_FALLBACK === "1") return [];
   return run("systemctl", ["--user", "list-units", "--all", "--plain", "--no-legend"])
     .stdout.split("\n")
     .map((line) => line.trim().split(/\s+/)[0])
-    .filter(Boolean);
+    .filter((name) => name.startsWith("local.vorteo."));
 }
 
 // Install -------------------------------------------------------------------
@@ -159,8 +162,8 @@ function install(scenario) {
 // Status --------------------------------------------------------------------
 
 function readStatus() {
-  if (!existsSync(CONTRACT.installedCli)) fail(`${CONTRACT.installedCli} is missing.`);
-  const result = run(process.execPath, [CONTRACT.installedCli, "status", "--json"], {
+  if (!existsSync(CONTRACT.vorteoCommand)) fail(`${CONTRACT.vorteoCommand} is missing.`);
+  const result = run(CONTRACT.vorteoCommand, ["status", "--json"], {
     check: false,
   });
   if (result.status !== 0) return { error: result.stderr.trim() || `exit ${result.status}` };
@@ -349,10 +352,12 @@ function listenOnHost() {
   });
 }
 
-function assertControl(image, gateway, port) {
+async function assertControl(image, gateway, port) {
   // Proves the gateway listener is reachable from an ordinary container, so a
   // failure from Dev means isolation rather than a dead listener.
-  const control = docker(
+  // Keep this event loop free to serve the control container's HTTP request.
+  const control = await execute(
+    "docker",
     [
       "run",
       "--rm",
@@ -366,7 +371,7 @@ function assertControl(image, gateway, port) {
       "10",
       `http://${gateway}:${port}/`,
     ],
-    { check: false },
+    { encoding: "utf8" },
   );
   if (control.stdout.trim() !== "host") {
     fail(
@@ -470,7 +475,7 @@ async function assertGate() {
   try {
     const { port } = server.address();
     const { bridge, all } = gateways(container);
-    assertControl(image, bridge, port);
+    await assertControl(image, bridge, port);
     assertDirectRefused(container, [
       ...all.map((gateway) => [gateway, port]),
       ["10.0.0.1", 443],
@@ -483,6 +488,39 @@ async function assertGate() {
   }
 }
 
+function assertSharedProjects() {
+  const container = devContainer(readStatus());
+  const directory = path.join(CONTRACT.projectsFolder, `.install-write-check-${randomUUID()}`);
+  mkdirSync(directory);
+  const hostFile = path.join(directory, "host.txt");
+  const devFile = path.join(directory, "dev.txt");
+  try {
+    writeFileSync(hostFile, "host");
+    docker([
+      "exec",
+      "--user",
+      "paseo",
+      container,
+      "node",
+      "-e",
+      "const fs=require('fs'); process.umask(0o077); fs.appendFileSync(process.argv[1],'+dev'); " +
+        "fs.writeFileSync(process.argv[2],'dev');",
+      hostFile,
+      devFile,
+    ]);
+    if (readFileSync(hostFile, "utf8") !== "host+dev")
+      fail("Dev could not edit the Host-created project file.");
+    if (readFileSync(devFile, "utf8") !== "dev")
+      fail("Host could not read the Dev-created project file.");
+    writeFileSync(devFile, "dev+host");
+    const result = docker(["exec", "--user", "paseo", container, "cat", devFile]).stdout;
+    if (result !== "dev+host") fail("Host could not edit the Dev-created project file.");
+    step("Host and Dev can create, read and edit each other's shared project files");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 // Legacy identity -----------------------------------------------------------
 
 function assertIdentity() {
@@ -492,14 +530,25 @@ function assertIdentity() {
   if (!dev) fail("The installation has no Dev environment after wrapping.");
   if (dev.serverId !== expected) fail(`Dev is ${dev.serverId}, not the legacy ${expected}.`);
   const container = devContainer(status);
-  const home = JSON.parse(
-    docker(["inspect", container, "--format", "{{json .Mounts}}"]).stdout,
-  ).find((mount) => mount.Destination === "/home/paseo");
+  const mounts = JSON.parse(docker(["inspect", container, "--format", "{{json .Mounts}}"]).stdout);
   const legacy = process.env.VORTEO_E2E_LEGACY_DEPLOYMENT;
-  const kept =
-    home && (home.Source.startsWith(`${legacy}/`) || home.Source.startsWith(CONTRACT.home));
-  if (!kept) fail(`Dev's home is ${home?.Source}, not the legacy deployment's.`);
-  step(`Dev kept server-id ${expected} and the legacy home (${home.Source})`);
+  for (const [destination, source, content] of [
+    ["/home/paseo", path.resolve(legacy, "data/home"), "legacy home preserved"],
+    ["/workspace", path.resolve(legacy, "workspace"), "legacy workspace preserved"],
+  ]) {
+    const mount = mounts.find((entry) => entry.Destination === destination);
+    if (mount?.Source !== source) fail(`${destination} is not the original legacy mount.`);
+    const preserved = docker([
+      "exec",
+      "--user",
+      "paseo",
+      container,
+      "cat",
+      `${destination}/legacy-acceptance.txt`,
+    ]).stdout;
+    if (preserved !== content) fail(`${destination} lost its existing user file.`);
+  }
+  step(`Dev kept server-id ${expected}, both original mounts, and their user files`);
 }
 
 function assertNoDocker() {
@@ -528,8 +577,34 @@ async function uninstall() {
 }
 
 function diagnose() {
-  const status = existsSync(CONTRACT.installedCli) ? readStatus() : { error: "not installed" };
+  const status = existsSync(CONTRACT.vorteoCommand) ? readStatus() : { error: "not installed" };
   console.log(JSON.stringify(status, null, 2));
+  const diagnostics = path.join(stateDir, "diagnostics");
+  mkdirSync(diagnostics, { recursive: true });
+  const password = existsSync(CONTRACT.passwordFile)
+    ? readFileSync(CONTRACT.passwordFile, "utf8").trim()
+    : "";
+  function record(name, content) {
+    const redacted = password ? content.replaceAll(password, "[REDACTED]") : content;
+    writeFileSync(path.join(diagnostics, name), redacted);
+    console.log(`::group::${name}\n${redacted}\n::endgroup::`);
+  }
+  const logs = path.join(CONTRACT.home, "host", "logs");
+  if (existsSync(logs)) {
+    for (const entry of readdirSync(logs, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith(".log")) {
+        record(entry.name, readFileSync(path.join(logs, entry.name), "utf8"));
+      }
+    }
+  }
+  if (isLinux) {
+    // These are disposable CI containers; do not export inspect output or env files.
+    const containers = run("docker", ["ps", "-aq"], { check: false });
+    for (const id of (containers.stdout ?? "").trim().split("\n").filter(Boolean)) {
+      const result = run("docker", ["logs", "--tail", "500", id], { check: false });
+      record(`container-${id}.log`, `${result.stdout ?? ""}${result.stderr ?? ""}`);
+    }
+  }
   if (process.platform === "darwin") {
     run("launchctl", ["list"], { check: false, stdio: "inherit" });
     return;
@@ -548,6 +623,7 @@ const COMMANDS = {
   "assert-access": assertAccess,
   "assert-gate": assertGate,
   "assert-identity": assertIdentity,
+  "assert-shared-projects": assertSharedProjects,
   "assert-no-docker": assertNoDocker,
   uninstall,
   diagnose,

@@ -139,7 +139,7 @@ RUN set -eux; \
       *) echo "Unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     apt-get update; \
-    apt-get install -y --no-install-recommends supervisor python3 util-linux iproute2 iptables; \
+    apt-get install -y --no-install-recommends supervisor python3 acl util-linux iproute2 iptables; \
     curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_${TARGETARCH}.tgz" -o /tmp/tailscale.tgz; \
     echo "$checksum  /tmp/tailscale.tgz" | sha256sum -c -; \
     tar -xzf /tmp/tailscale.tgz -C /tmp; \

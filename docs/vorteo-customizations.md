@@ -1,5 +1,36 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-01): release 26.11.103 extends existing exact-path Git trust to registered Projects repositories whose root or .git ownership differs from the daemon account. This completes agent and terminal Git access for shared Linux projects without wildcard trust or ownership changes. Focused trust tests and a real two-UID Docker Git index-write check pass.
+
+Maintenance review (2026-11-01): release 26.11.102 aligns the CI routing contract with the macOS 15 file-observation job after runner migration. The installer and runtime are unchanged.
+
+Maintenance review (2026-11-01): release 26.11.101 moves remaining macOS 14 test and packaging jobs to macOS 15 after GitHub rejected the retired runner during release validation. Installer behavior is unchanged from 26.11.100.
+
+Maintenance review (2026-11-01): release 26.11.100 prepares Linux shared Projects use explicit ACLs for Host and Dev with different numeric user IDs, retaining file owners and unrelated effective access. New and adopted installations verify bidirectional writes; repair adds the step for old plans. Private append-only permission receipts survive uninstall and support conditional rollback. Symlinks stay untouched; foreign-owned entries, special files, nested filesystems and outside hard links are refused. README and installation documentation describe inheritance, filesystem requirements and recovery.
+
+Maintenance review (2026-11-01): installer release work incorporates the current main branch, including the accepted preview channel migration and its validation fixes. Existing installation fixes and pending shared Projects acceptance are retained.
+
+Maintenance review (2026-10-31): Linux cleanup makes each emptied disposable mount root traversable before the Host removes it. This fixes removal of a Dev-owned directory with mode 0700 after its contents were already deleted. Adopted deployments, Projects and keep-data remain excluded from cleanup.
+
+Maintenance review (2026-10-31): the Dev internal network disables the bridge's IPv4 address, closing direct access to Host services bound on that address. A real Docker 24 control reproduced the old bypass and verified refusal with the option enabled; Dev-to-gate peer traffic and the gate's published loopback port remain reachable. Full release acceptance remains pending.
+
+Maintenance review (2026-10-31): candidate 26.10.3102 includes Dev client provisioning for private Linux homes. A restricted Linux container verified fresh installation and retry over an old root-owned client file. Exact-commit acceptance remains pending.
+
+Maintenance review (2026-10-31): Dev client provisioning writes private files atomically as the Dev account, passing credentials through stdin rather than process arguments. This avoids a root traversal failure in private Linux homes and permits retrying after the older root-owned copy. Container capabilities remain unchanged.
+
+Maintenance review (2026-10-31): release candidate 26.10.3101 includes the Host-only detection fix and explicit legacy selection in the overlapping-folder recovery command. The regression case verifies that retrying with the suggested root and deployment hint adopts the original Dev. Exact-commit installation acceptance remains pending.
+
+Maintenance review (2026-10-31): an explicit Host-only installation skips Docker discovery and prerequisite probes as well as container creation. Existing detection and shell acceptance cases cover the flag. README onboarding is unchanged.
+
+Maintenance review (2026-10-31): release candidate 26.10.3100 includes clean-machine build, Linux initialization and uninstall fixes, plus legacy data-preservation acceptance. Publication remains pending exact-commit installation tests.
+
+Maintenance review (2026-10-31): Linux uninstall removes container-owned disposable data through a restricted cleanup container before deleting its recovery journal; adopted data and keep-data behavior are unchanged. Installation acceptance uses the installed public command for status and excludes unrelated system services from registration and uninstall checks. The gate control probe runs asynchronously so its local server can answer. Product behavior and README onboarding are unchanged.
+
+Maintenance review (2026-10-31): Host installer build subprocesses default to a 4 GiB JavaScript heap; explicit owner heap settings take precedence. This addresses the server compiler exhausting the roughly 2 GiB default on macOS CI. Runtime memory settings and README onboarding are unchanged.
+
+Maintenance review (2026-10-31): fresh Linux container homes initialize under the container account after assigning the private bind mount to that account. The existing capability restrictions remain in place; inaccessible populated homes are refused without changing ownership. Legacy installation acceptance checks exact home and workspace mounts and preserved synthetic files. README onboarding is unchanged.
+
+Maintenance review (2026-10-31): installation CI prints Host build logs and container logs on failure and retains the diagnostic files for seven days in the workflow workspace runtime directory. The generated owner password is redacted. Product behavior and README onboarding are unchanged.
 Maintenance review (2026-10-31): the reviewed preview channel identity migration is integrated with the current lifecycle queue, recovery readers and exact approval interface. It preserves requests, reservations and policy while recording APFS volume trust separately from device numbers. It requires compatible deployed consumers and protected coordinator configuration before admission. The missing tracked consumer deployment adapter remains unfinished; no installed repair or preview readiness is claimed. See [channel maintenance](preview-broker-maintenance.md). README overview and onboarding are unchanged.
 
 Maintenance review (2026-10-31): the guarded publisher verifies active organization ownership for same-repository pull requests authored by the current account. Repository administrators and ordinary organization members gain no approval authority. Focused tests cover ownership, access failures and blocking reviews. The correction preserves date-based release versions. Runtime and README behavior are unchanged.
