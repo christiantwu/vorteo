@@ -6,6 +6,7 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-01
 
+- Keep existing Dev threads on the built-in Claude provider working after an upgrade: the Dev image's own CLAUDE_CONFIG_DIR no longer marks the native account as a bound account awaiting delivery.
 - Fix the one-command installer leaving the packaged Claude CLI as its placeholder executable, which made Full sign-in fail on a new installation. Release builds now run dependency install hooks, as the other Host and Dev build paths already do.
 
 ## 26.11.105 - 2026-11-01
