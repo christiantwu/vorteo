@@ -109,3 +109,18 @@ it("selects accounts independently while keeping one shared profile ID", () => {
   ]);
   expect(shared.provider).toBe("codex");
 });
+
+it("shows an enabled account on a fresh installation with no saved profiles", () => {
+  expect(
+    accountPresets({
+      rows: [],
+      definitions: [],
+      entries: [
+        { provider: "codex", label: "Codex", enabled: true, status: "ready" },
+        { provider: "claude", enabled: false, status: "ready" },
+      ],
+      query: "",
+      accountIndependent: true,
+    }),
+  ).toEqual([{ provider: "codex", label: "Codex", rows: [] }]);
+});

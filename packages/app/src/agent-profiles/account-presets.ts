@@ -58,6 +58,16 @@ export function accountPresets(input: {
     }
     group.rows.push(row);
   }
+  // Accounts exist independently of saved profiles, including on a fresh install.
+  for (const entry of input.entries ?? []) {
+    if (entry.enabled && !groups.has(entry.provider)) {
+      groups.set(entry.provider, {
+        provider: entry.provider,
+        label: resolveProviderLabel(entry.provider, input.entries),
+        rows: [],
+      });
+    }
+  }
   const query = input.query.trim().toLowerCase();
   // Daemons register the same accounts in different orders. Display names provide
   // a shared ordering even when environment-local provider IDs differ.

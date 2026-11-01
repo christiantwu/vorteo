@@ -50,6 +50,8 @@ interface AccountPresetMenuProps {
   loading?: boolean;
   error?: string | null;
   accounts: AccountPresets[];
+  defaultProviders?: string[];
+  onAccountDefaults?: (provider: string) => void;
   definitions: readonly AgentProfile[];
   entries: ProviderSnapshotEntry[] | undefined;
   inspectedId: string | undefined;
@@ -536,8 +538,8 @@ function AccountButton({
     <ProfileSelectorTile
       singleLine={singleLine}
       leading={icon}
-      badge={renderBadge(group.rows[0])}
-      subtitle={renderAccountDetails(group.rows[0])}
+      badge={group.rows[0] ? renderBadge(group.rows[0]) : undefined}
+      subtitle={group.rows[0] ? renderAccountDetails(group.rows[0]) : "No available profiles"}
       label={group.label}
       selected={active}
       onPress={select}
@@ -554,6 +556,33 @@ interface AccountChoicesProps extends AccountPresetMenuProps {
 }
 
 function AccountChoices(props: AccountChoicesProps) {
+  const useDefaults = useCallback(() => props.onAccountDefaults?.(props.account.provider), [props]);
+  if (
+    !props.loading &&
+    !props.error &&
+    props.onAccountDefaults &&
+    props.defaultProviders?.includes(props.account.provider)
+  ) {
+    return (
+      <View
+        style={[settingsStyles.card, styles.detailCard, props.inline && styles.inlineColumn]}
+        testID="preset-profile-card"
+      >
+        {props.heading}
+        <Text style={styles.summary}>
+          No saved profiles yet. Start with the account default model and settings.
+        </Text>
+        <Button
+          variant="outline"
+          disabled={props.disabled}
+          onPress={useDefaults}
+          testID="preset-account-defaults"
+        >
+          Use account defaults
+        </Button>
+      </View>
+    );
+  }
   const entry = props.entries?.find((candidate) => candidate.provider === props.account.provider);
   const catalogState = profileCatalogState(entry);
   const loading = !props.error && catalogState === "loading";

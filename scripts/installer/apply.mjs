@@ -69,15 +69,58 @@ export function installResult(plan, outputs) {
 }
 
 async function runSteps(steps, state, emit, { force = false } = {}) {
-  for (const step of steps) {
+  for (const [index, step] of steps.entries()) {
     if (!force && state.journal.isDone(step)) {
       emit({ step, status: "skip", message: "Already done." });
       continue;
     }
-    emit({ step, status: "start", message: titleFor(step) });
+    emit({
+      step,
+      status: "start",
+      message: titleFor(step),
+      index: index + 1,
+      total: steps.length,
+    });
     let result;
     try {
-      result = await stepFor(step)(state);
+      // Report activity, never raw command output: build logs can contain secrets.
+      const run = async (command, args, options = {}) => {
+        let bytes = 0;
+        let reported = 0;
+        let fragment = "";
+        let detail = "Command running";
+        if (path.basename(command) === "npm")
+          detail = args[0] === "run" ? `npm ${args[1]}` : "Installing dependencies";
+        if (path.basename(command) === "docker" && args[0] === "build")
+          detail = "Building Docker image";
+        emit({ step, status: "progress", message: detail, detail });
+        return state.context.run(command, args, {
+          ...options,
+          onOutput(chunk) {
+            options.onOutput?.(chunk);
+            bytes += Buffer.byteLength(chunk);
+            fragment = (fragment + chunk.toString()).slice(-4096);
+            const stages = [...fragment.matchAll(/#\d+ \[([a-zA-Z0-9_-]+) (\d+)\/(\d+)\]/g)];
+            if (stages.length) {
+              const match = stages.at(-1);
+              detail = `Docker stage ${match[1]} ${match[2]}/${match[3]}`;
+            }
+            if (Date.now() - reported >= 1000) {
+              emit({
+                step,
+                status: "progress",
+                message: detail,
+                detail,
+                outputBytes: bytes,
+              });
+              reported = Date.now();
+            }
+          },
+        });
+      };
+      const context = { ...state.context, run };
+      result = await stepFor(step)({ ...state, context });
+      state.context.serverModules = context.serverModules;
     } catch (error) {
       state.journal.mark(step, "fail", error.message);
       emit({ step, status: "fail", message: error.message, fix: error.fix ?? RERUN });

@@ -74,6 +74,10 @@ Run this on the Mac or Linux computer that will host Vorteo, or give it to your 
 curl -fsSL https://github.com/terran-labs/vorteo/releases/latest/download/install.sh | bash
 ```
 
+Allow about 15 to 60 minutes with a Dev container, or 5 to 20 minutes for Host only. These are planning estimates; cached builds can finish faster and slow machines or downloads can take longer. The installer shows elapsed time and live build activity.
+
+Authenticated provider connections receive a Default profile automatically, so you can create a workspace immediately. Later connections receive the same setup; your existing profiles and deliberate deletions are preserved.
+
 It creates:
 
 - `~/vorteo`, the installation folder. Your owner password is in `~/vorteo/host/owner-password`.

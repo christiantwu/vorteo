@@ -1,3 +1,4 @@
+import { resolveProviderType } from "@getpaseo/protocol/provider-preferences";
 import { useAppSettings } from "@/hooks/use-settings";
 import { installationProviderReference } from "@getpaseo/protocol/installation-settings";
 import { sharedChoiceState } from "./shared-choices";
@@ -147,10 +148,48 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
         query: "",
         providers: config?.providers,
         accountIndependent,
-      }),
-    [rows, definitions, entries, config, accountIndependent],
+      }).filter((account) =>
+        isProfileAllowed(projectPolicy, { id: "", provider: account.provider }),
+      ),
+    [rows, definitions, entries, config, accountIndependent, projectPolicy],
   );
   const sameEnvironment = serverId === props.serverId;
+  const defaultProviders = useMemo(
+    () =>
+      (entries ?? [])
+        .filter((entry) => {
+          const type = resolveProviderType(entry.provider, config?.providers ?? {});
+          return (
+            sameEnvironment &&
+            definitions !== null &&
+            !isLoading &&
+            !error &&
+            isSupported &&
+            isEnvironmentAllowed(projectPolicy, environmentKind) &&
+            entry.enabled &&
+            entry.status === "ready" &&
+            isProfileAllowed(projectPolicy, {
+              id: "",
+              provider: entry.provider,
+            }) &&
+            !(definitions ?? []).some(
+              (profile) => profile.provider === type || profile.provider === entry.provider,
+            )
+          );
+        })
+        .map((entry) => entry.provider),
+    [
+      entries,
+      config,
+      definitions,
+      projectPolicy,
+      isLoading,
+      error,
+      isSupported,
+      environmentKind,
+      sameEnvironment,
+    ],
+  );
   const selectedId = sameEnvironment ? props.selectedId : undefined;
   const inspectedId = inspectedByServer[serverId ?? ""] ?? selectedId;
   const inspectedProvider =
@@ -188,6 +227,8 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
         const preferredId = settings.workspaceDefaults.profilesByAccount[reference];
         const profile = defaultProfile(compatible, preferredId);
         if (profile) apply(profile.id, { provider });
+        else if (sameEnvironment && defaultProviders.includes(provider))
+          props.profiles.applyAccountDefaults?.(provider);
       } else if (!accountIndependent) {
         const account = accounts.find((item) => item.provider === provider);
         const matchingId =
@@ -208,6 +249,9 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
       definitions,
       config,
       settings,
+      sameEnvironment,
+      defaultProviders,
+      props.profiles,
       apply,
     ],
   );
@@ -298,6 +342,8 @@ export function EnvironmentPresetMenu(props: EnvironmentPresetMenuProps) {
       environments={environments}
       onEnvironment={selectEnvironment}
       accounts={accounts}
+      defaultProviders={defaultProviders}
+      onAccountDefaults={props.profiles.applyAccountDefaults}
       definitions={definitions ?? []}
       entries={entries}
       activeProfileId={props.activeProfileId}

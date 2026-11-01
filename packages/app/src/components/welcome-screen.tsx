@@ -54,6 +54,23 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
     alignItems: "center",
   },
+  installationCard: {
+    width: "100%",
+    maxWidth: 600,
+    padding: theme.spacing[6],
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.xl,
+    backgroundColor: theme.colors.surface1,
+    alignItems: "center",
+  },
+  plainContent: { width: "100%", alignItems: "center" },
+  installationTitle: {
+    fontSize: theme.fontSize["4xl"],
+    fontWeight: theme.fontWeight.semibold,
+  },
+  installationCopy: { marginBottom: theme.spacing[6], gap: theme.spacing[3] },
+  installationActions: { maxWidth: "100%" },
   title: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
@@ -261,57 +278,65 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
         testID="welcome-screen"
       >
         <View style={styles.content}>
-          <VorteoLogo size={96} />
-          <View style={styles.copyBlock}>
-            <Text style={styles.title}>
-              {installation ? `Welcome to ${installationName}` : t("onboarding.title")}
-            </Text>
-            {isNative ? (
-              <Pressable style={styles.setupLink} onPress={handleOpenPaseoSite}>
-                <Text style={styles.setupLinkText}>paseo.sh</Text>
-                <ExternalLink size={14} color={theme.colors.accent} />
-              </Pressable>
-            ) : null}
-          </View>
-
-          <View style={styles.actions}>
-            {installation ? (
-              <InstallationWelcome />
-            ) : (
-              actions.map((action) => <WelcomeActionButton key={action.key} action={action} />)
-            )}
-            {demoError ? (
-              <Text accessibilityRole="alert" style={styles.subtitle}>
-                {demoError}
+          <View
+            style={installation ? styles.installationCard : styles.plainContent}
+            testID="welcome-card"
+          >
+            <VorteoLogo size={96} />
+            <View style={[styles.copyBlock, installation && styles.installationCopy]}>
+              <Text style={[styles.title, installation && styles.installationTitle]}>
+                {installation ? `Welcome to ${installationName}` : t("onboarding.title")}
               </Text>
-            ) : null}
-          </View>
+              {installation ? (
+                <Text style={styles.subtitle}>Connect to your installation.</Text>
+              ) : null}
+              {isNative ? (
+                <Pressable style={styles.setupLink} onPress={handleOpenPaseoSite}>
+                  <Text style={styles.setupLinkText}>paseo.sh</Text>
+                  <ExternalLink size={14} color={theme.colors.accent} />
+                </Pressable>
+              ) : null}
+            </View>
 
-          <View style={styles.footerActions}>
-            <Button
-              variant="ghost"
-              size="sm"
-              leftIcon={Play}
-              onPress={handleDemo}
-              testID="welcome-demo"
-            >
-              Demo
-            </Button>
-            <Text style={styles.footerSeparator} aria-hidden>
-              |
-            </Text>
-            <Button
-              variant="ghost"
-              size="sm"
-              leftIcon={Settings}
-              onPress={handleOpenSettings}
-              testID="welcome-open-settings"
-            >
-              {t("onboarding.actions.settings")}
-            </Button>
+            <View style={[styles.actions, installation && styles.installationActions]}>
+              {installation ? (
+                <InstallationWelcome />
+              ) : (
+                actions.map((action) => <WelcomeActionButton key={action.key} action={action} />)
+              )}
+              {demoError ? (
+                <Text accessibilityRole="alert" style={styles.subtitle}>
+                  {demoError}
+                </Text>
+              ) : null}
+            </View>
+
+            <View style={styles.footerActions}>
+              <Button
+                variant="ghost"
+                size="sm"
+                leftIcon={Play}
+                onPress={handleDemo}
+                testID="welcome-demo"
+              >
+                Demo
+              </Button>
+              <Text style={styles.footerSeparator} aria-hidden>
+                |
+              </Text>
+              <Button
+                variant="ghost"
+                size="sm"
+                leftIcon={Settings}
+                onPress={handleOpenSettings}
+                testID="welcome-open-settings"
+              >
+                {t("onboarding.actions.settings")}
+              </Button>
+            </View>
+            <Text style={styles.versionLabel}>{appVersionText}</Text>
           </View>
         </View>
-        <Text style={styles.versionLabel}>{appVersionText}</Text>
 
         {installation ? null : (
           <AddHostModal

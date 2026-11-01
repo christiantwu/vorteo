@@ -78,6 +78,7 @@ export interface AgentProfilePickerRow {
 
 export interface AgentProfilePicker {
   selectEnvironment?: (serverId: string) => void;
+  applyAccountDefaults?: (provider: string) => void;
   /** The folder the task runs in, so project exclusions can hide unavailable choices. */
   projectPath: string | null;
   refreshStatus?: () => void;
@@ -497,6 +498,24 @@ export function useAgentProfilePicker(
     ],
   );
 
+  const applyAccountDefaults = useCallback(
+    (provider: string) => {
+      if (target.kind !== "draft") return;
+      if (!availableProviders.includes(provider)) {
+        toast.error("The selected account is unavailable. Choose another account.");
+        return;
+      }
+      target.controls.applyProfile({
+        provider,
+        modelId: "",
+        modeId: "",
+        thinkingOptionId: "",
+        featureValues: {},
+      });
+    },
+    [target, availableProviders, toast],
+  );
+
   const refreshStatus = useCallback(() => {
     const providers = [
       ...new Set(rows.filter((row) => row.localEndpoint).map((row) => row.provider)),
@@ -525,6 +544,7 @@ export function useAgentProfilePicker(
             selectEnvironment:
               target.kind === "draft" ? target.controls.selectEnvironment : undefined,
             applyProfile,
+            applyAccountDefaults: target.kind === "draft" ? applyAccountDefaults : undefined,
             applyDestinationProfile: recovery ? undefined : applyDestinationProfile,
             isApplying,
             handoffElement,
@@ -535,6 +555,7 @@ export function useAgentProfilePicker(
         : null,
     [
       applyProfile,
+      applyAccountDefaults,
       applyDestinationProfile,
       recovery,
       target,

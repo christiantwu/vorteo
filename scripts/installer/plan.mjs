@@ -452,6 +452,12 @@ export function publicOrigin(plan, hostname = plan.remote.hostname) {
   return hostname ? `https://${hostname}:${plan.ports.https}` : null;
 }
 
+// Planning ranges, not deadlines: cold Docker builds dominate first installations.
+export function installationTiming(plan) {
+  const range = plan.devContainer ? "15 to 60 minutes" : "5 to 20 minutes";
+  return `Estimated installation time: ${range} after approval. Cached reruns can be faster; slow downloads or limited CPU/memory can take longer. Individual build commands time out after 30 minutes. Elapsed time and build activity appear while installing.`;
+}
+
 export function summarizePlan(plan) {
   const lines = [];
   lines.push(

@@ -1,3 +1,4 @@
+import { useToast } from "@/contexts/toast-context";
 import type { BrokerReviewJob } from "./preview-broker-review";
 import {
   brokerActionDisabledReason,
@@ -181,7 +182,7 @@ function InstallationWelcomeForm({ model }: { model: InstallationPanelModel }) {
     );
   }
   return (
-    <View style={styles.historyItem} testID="installation-welcome">
+    <View style={styles.welcomeForm} testID="installation-welcome">
       <Field label="Owner password">
         <FormTextInput
           size="md"
@@ -221,35 +222,37 @@ function InstallationWelcomeForm({ model }: { model: InstallationPanelModel }) {
 // on the Host; the password itself never passes through this page.
 function PasswordFileHint({ passwordFile }: { passwordFile: string }) {
   const command = passwordCopyCommand(passwordFile);
-  const [notice, setNotice] = useState<string | null>(null);
+  const toast = useToast();
   const copy = useCallback(async () => {
     try {
       await copyToClipboard(command);
-      setNotice("Command copied. Run it in Terminal on your Host, then paste the password above.");
+      toast.show("Command copied", {
+        variant: "success",
+        testID: "installation-command-copied",
+      });
     } catch {
-      setNotice("Could not copy the command. Select it above and copy it manually.");
+      toast.error("Could not copy. Select the command and copy it manually.");
     }
-  }, [command]);
+  }, [command, toast]);
   return (
-    <View testID="installation-password-hint">
-      <Text style={styles.text}>
-        The host installer generated this password. It is in this file on your Host:
+    <View style={styles.passwordHelp} testID="installation-password-hint">
+      <Text style={styles.passwordHelpTitle}>Find your password</Text>
+      <Text style={styles.passwordHelpText}>
+        Run this command in Terminal on the computer hosting Vorteo. Then paste the password above.
       </Text>
-      <Text selectable style={styles.text} testID="installation-password-file">
-        {passwordFile}
-      </Text>
-      <Text style={styles.text}>To copy it to the clipboard on your Host, run:</Text>
-      <Text selectable style={styles.text} testID="installation-password-command">
-        {command}
-      </Text>
-      <Button variant="outline" onPress={copy} testID="installation-password-copy-command">
+      <View style={styles.passwordCommand}>
+        <Text selectable style={styles.passwordCommandText} testID="installation-password-command">
+          {command}
+        </Text>
+      </View>
+      <Button
+        variant="outline"
+        size="lg"
+        onPress={copy}
+        testID="installation-password-copy-command"
+      >
         Copy command
       </Button>
-      {notice ? (
-        <Text accessibilityLiveRegion="polite" style={styles.text}>
-          {notice}
-        </Text>
-      ) : null}
     </View>
   );
 }
@@ -2345,6 +2348,34 @@ const styles = StyleSheet.create((theme) => ({
   passwordInput: { flexGrow: 1, flexBasis: 200 },
   textInset: { padding: theme.spacing[4] },
   cardBody: { padding: theme.spacing[4], gap: theme.spacing[2] },
+  welcomeForm: { gap: theme.spacing[4] },
+  passwordHelp: {
+    marginTop: theme.spacing[2],
+    paddingTop: theme.spacing[6],
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    gap: theme.spacing[3],
+  },
+  passwordHelpTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.lg,
+    fontWeight: theme.fontWeight.semibold,
+  },
+  passwordHelpText: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.base,
+    lineHeight: theme.fontSize.base * 1.5,
+  },
+  passwordCommand: {
+    padding: theme.spacing[4],
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface0,
+  },
+  passwordCommandText: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+    fontFamily: theme.fontFamily.mono,
+  },
   historyItem: { gap: theme.spacing[2] },
   sharedWorkflows: { gap: theme.spacing[4] },
   requestHeader: {
