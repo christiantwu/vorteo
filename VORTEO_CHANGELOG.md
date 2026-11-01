@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Wait for the matching submission acceptance before checking turn completion in the rewind browser test, preventing an idle setup race.
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
 - Give Linux desktop CI the existing browser CI budget for cold Metro compilation. Lifecycle and UI assertion deadlines remain unchanged.
 
 ## Unreleased - 2026-10-31
