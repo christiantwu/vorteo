@@ -4,6 +4,12 @@ Vorteo change history, covering features, fixes, documentation, tests, tooling a
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.101 - 2026-11-01
+
+### Maintenance
+
+- Move remaining macOS 14 CI, Nix and desktop release jobs to macOS 15 because GitHub is retiring the older runner image. Prepare the final installation release with unchanged Linux sharing behavior.
+
 ## 26.11.100 - 2026-11-01
 
 ### Installation
