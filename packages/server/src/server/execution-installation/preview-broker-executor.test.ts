@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
-import { expect, test, vi } from "vitest";
+import { expect, test as platformTest, vi } from "vitest";
 import { InstallationConfigSchema, type InstallationConfig } from "./config.js";
 import { compatibilityProbe, createPreviewBrokerExecutor } from "./preview-broker-executor.js";
+
+// Production attaches this executor only on macOS. These simulated fixtures use
+// its POSIX path contract and can also run on Linux, but not Windows.
+const test = platformTest.skipIf(process.platform === "win32");
 
 const inputs = vi.hoisted(() => new Map<string, Buffer>());
 vi.mock("./coordinator-bootstrap-artifact.js", () => ({

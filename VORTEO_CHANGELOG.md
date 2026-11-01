@@ -8,6 +8,12 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ### Maintenance
 
+- Scope broker executor path fixtures and the filesystem-backed Host HTTP test to POSIX systems. Pure broker workflow tests continue to run on Windows.
+
+## Unreleased - 2026-10-31
+
+### Maintenance
+
 - Retain daemon status details when CLI authentication assertions fail, so CI reports the connection error instead of only an unreachable label.
 
 ## Unreleased - 2026-10-31
