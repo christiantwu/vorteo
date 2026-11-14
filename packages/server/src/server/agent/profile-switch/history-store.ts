@@ -58,12 +58,26 @@ export interface SwitchHistoryStoreOptions {
 }
 
 interface ChainSegment {
+  switchId: string;
   file: string;
   bytes: number;
 }
 
+export interface SwitchHistoryChainStatus {
+  /** Switch ids with a segment in the chain, oldest first. */
+  switchIds: string[];
+  /**
+   * True only when the chain reaches its first segment without a gap and holds a segment for
+   * every switch the thread's record lists. Legacy snapshots can lack earlier history, so a
+   * migrated chain can be shorter than the record.
+   */
+  complete: boolean;
+}
+
 export class SwitchHistoryStore {
   private readonly migrations = new Map<string, Promise<boolean>>();
+  /** A failed migration is not retried while this process runs; each retry rereads the file. */
+  private readonly failedMigrations = new Set<string>();
 
   constructor(private readonly options: SwitchHistoryStoreOptions) {}
 
@@ -99,26 +113,42 @@ export class SwitchHistoryStore {
     return readChain(segments, options.maxBytes ?? Number.POSITIVE_INFINITY);
   }
 
+  /** Compares the chain ending at the record's latest switch with every switch it lists. */
+  async inspectChain(
+    agentId: string,
+    recordSwitchIds: readonly string[],
+  ): Promise<SwitchHistoryChainStatus> {
+    const latest = recordSwitchIds.at(-1);
+    if (latest === undefined) return { switchIds: [], complete: true };
+    if (!(await exists(this.segmentPath(agentId, latest))))
+      return { switchIds: [], complete: false };
+    const { segments, complete } = await this.resolveChain(agentId, latest);
+    const switchIds = segments.map((segment) => segment.switchId);
+    const held = new Set(switchIds);
+    return { switchIds, complete: complete && recordSwitchIds.every((id) => held.has(id)) };
+  }
+
   /**
-   * After a switch commits, removes legacy snapshots and orphaned segments that are not part
-   * of the chain ending at `switchId`. Older daemons read only the latest switch's legacy
-   * snapshot, and the latest switch now has none, so the removed files were unreachable.
+   * After a switch commits, removes orphaned segments from switches that never committed.
+   * Runs only when the chain is complete against the record. Legacy snapshots are never
+   * removed: an older snapshot can hold history that no newer snapshot or segment repeats.
    */
-  async pruneUnreferenced(agentId: string, switchId: string): Promise<void> {
-    const { segments, complete } = await this.resolveChain(agentId, switchId);
-    // A broken chain may still have history only in a legacy snapshot; keep everything.
-    if (!complete) return;
-    const keep = new Set(segments.map((segment) => path.basename(segment.file)));
+  async pruneUnreferenced(agentId: string, recordSwitchIds: readonly string[]): Promise<void> {
+    const status = await this.inspectChain(agentId, recordSwitchIds);
+    if (!status.complete) return;
+    const keep = new Set(
+      status.switchIds.map((id) => `${encodeURIComponent(id)}${SEGMENT_SUFFIX}`),
+    );
     const dir = this.options.directory(agentId);
     for (const name of await fs.readdir(dir)) {
-      if (keep.has(name) || name.startsWith(".")) continue;
-      if (!name.endsWith(SEGMENT_SUFFIX) && !name.endsWith(LEGACY_SUFFIX)) continue;
+      if (keep.has(name) || !name.endsWith(SEGMENT_SUFFIX)) continue;
       await fs.rm(path.join(dir, name), { force: true });
     }
   }
 
   private migrate(agentId: string, switchId: string): Promise<boolean> {
     const key = `${agentId}\0${switchId}`;
+    if (this.failedMigrations.has(key)) return Promise.resolve(false);
     let migration = this.migrations.get(key);
     if (!migration) {
       migration = migrateLegacySwitchHistory({
@@ -137,7 +167,8 @@ export class SwitchHistoryStore {
         })
         .catch((error: unknown) => {
           // The legacy snapshot stays in place. Reading it whole is what exhausted the heap,
-          // so the thread loads with its switch marker only until migration succeeds.
+          // so the thread loads with its switch marker only until the daemon restarts.
+          this.failedMigrations.add(key);
           this.options.logger.error(
             { err: error, agentId },
             "Retained switch history could not be migrated; original files kept",
@@ -173,7 +204,7 @@ export class SwitchHistoryStore {
         }
         throw error;
       }
-      chain.unshift({ file, bytes });
+      chain.unshift({ switchId: next, file, bytes });
       next = header.previousSwitchId;
     }
     return { segments: chain, complete: next === null };
@@ -376,14 +407,16 @@ interface StagedSegment {
 }
 
 /**
- * Rebuilds segments from the newest legacy snapshot, which already contains every earlier
- * switch's history ending in that switch's marker. Each marker ends a segment. The snapshot
- * is parsed one array element at a time and each segment is written as its events arrive.
- * Segments are verified by rereading them before they replace anything; on failure the
- * staged segments are removed and every original file stays.
+ * Rebuilds segments from the latest switch's legacy snapshot. That snapshot is what older
+ * daemons replay: the history before each earlier marker it holds, each marker ending a
+ * segment. The snapshot is parsed one array element at a time and each segment is written as
+ * its events arrive. Segments are verified by rereading them before they become visible; on
+ * failure the staged segments are removed and every original file stays.
  *
- * The snapshot for `switchId` itself is kept so a rolled-back daemon, which reads only the
- * latest switch's snapshot, still shows the full history. It is pruned after the next switch.
+ * Migration never deletes a legacy snapshot. An older snapshot can hold history the newest
+ * lacks, when a thread once loaded with only its switch marker; that history stays on disk,
+ * unreplayed, exactly as older daemons left it. A marker whose segment already exists, from
+ * before a rollback, is never overwritten: the new segments chain onto it.
  */
 export async function migrateLegacySwitchHistory(
   input: LegacyMigrationInput,
@@ -391,27 +424,38 @@ export async function migrateLegacySwitchHistory(
   const legacy = input.legacyPath(input.switchId);
   if (!(await exists(legacy))) return { status: "absent" };
 
+  await removeStaleStagingFiles(input.directory);
   const staging = new LegacySegmentStaging(input);
   try {
     await staging.stage(legacy);
     for (const [switchId, segment] of staging.staged) await verifyStagedSegment(switchId, segment);
     // Map order is chain order, so the newest segment, whose presence marks completion, is last.
-    for (const [switchId, segment] of staging.staged)
-      await fs.rename(segment.file, input.segmentPath(switchId));
+    for (const [switchId, segment] of staging.staged) {
+      const file = input.segmentPath(switchId);
+      if (await exists(file)) throw new Error("A switch history segment appeared during migration");
+      await fs.rename(segment.file, file);
+    }
   } catch (error) {
     await staging.discard();
     throw error;
   }
 
-  // Superseded snapshots repeat history the segments now hold, and snapshots from switches
-  // that never committed are unreachable. Older daemons read only the latest one, kept here.
-  for (const name of await fs.readdir(input.directory)) {
-    if (!name.endsWith(LEGACY_SUFFIX) || path.join(input.directory, name) === legacy) continue;
-    await fs.rm(path.join(input.directory, name), { force: true });
-  }
   let events = 0;
   for (const segment of staging.staged.values()) events += segment.events;
   return { status: "migrated", segments: staging.staged.size, events };
+}
+
+/**
+ * A crashed migration or write leaves staging and temporary files. This process's own
+ * temporary files may belong to a write in progress; older processes' cannot.
+ */
+async function removeStaleStagingFiles(directory: string): Promise<void> {
+  for (const name of await fs.readdir(directory)) {
+    const staged = name.endsWith(`${SEGMENT_SUFFIX}.migrating`);
+    const temporary = name.startsWith(".") && name.endsWith(".tmp");
+    if (!staged && !(temporary && !name.includes(`.${process.pid}.`))) continue;
+    await fs.rm(path.join(directory, name), { force: true });
+  }
 }
 
 /** Splits a legacy snapshot into staged segments, one per switch marker. */
@@ -451,6 +495,15 @@ class LegacySegmentStaging {
     if (event.item.type !== "profile_switch" || this.staged.has(event.item.switchId)) return;
     // A segment is named for its switch, known only once its closing marker arrives.
     const switchId = event.item.switchId;
+    if (await exists(this.input.segmentPath(switchId))) {
+      // Written before a rollback. It already holds this history; continue after it.
+      await this.writer.abort();
+      this.writer = null;
+      for (const segment of this.staged.values()) await fs.rm(segment.file, { force: true });
+      this.staged.clear();
+      this.previous = switchId;
+      return;
+    }
     const result = await this.writer.finish();
     this.writer = null;
     const file = this.path(switchId);

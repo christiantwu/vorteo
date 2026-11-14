@@ -3958,7 +3958,10 @@ export class AgentManager {
     }
     await this.appendTimelineItem(agentId, record.marker);
     await this.requireRegistry()
-      .switchHistory.pruneUnreferenced(agentId, record.marker.switchId)
+      .switchHistory.pruneUnreferenced(agentId, [
+        ...(source.profileSwitches ?? []).map((entry) => entry.marker.switchId),
+        record.marker.switchId,
+      ])
       .catch((error: unknown) => {
         this.logger.warn({ err: error, agentId }, "Failed to prune superseded switch history");
       });
