@@ -154,7 +154,10 @@ any effect. A plan without the field means refusing.
   digest covers only the config and installed marker, and it pins no scheduler
   process generation. The worker takes the full inventory baseline after
   suppression; under the broker locks the inventory must still equal it exactly,
-  and it is compared across the commit window as in refusing mode.
+  and it is compared across the commit window as in refusing mode. Once the
+  broker runs again, its ledger, inbox, receipts and origins are its own working
+  state, so after restore the worker compares only the committed consumer files
+  and the config and installed marker, which no broker run writes.
 
 Both modes compare the approved preservation digest before any native effect, so
 a wrong mode or stale preparation refuses while the brokers still run.
@@ -179,7 +182,11 @@ Coordinators older than the release that added the `admission` field cannot pars
 a journal containing it. Once a deployment with that field has run, rolling the
 coordinator or Host back below that release is not supported. Lost replies retain uncertainty. After a lost reply or any file
 write, recovery reads evidence and native state without replaying commands,
-replacing files or automatically restoring registrations.
+replacing files or automatically restoring registrations. Recovery can confirm a
+run that committed and restored but never wrote its final receipt: every per-file
+intent and acknowledgement must match `commit.json`, every suppression and
+restoration effect must be acknowledged for this plan, no abort record may exist,
+and the same post-restore checks must pass. That confirmation writes nothing.
 The client commands are `request-broker-consumer-deployment --request-file` and
 `broker-deployment-status ID`. Submission requires the configured capability;
 exact approval remains separate. Source validation is not installed availability.

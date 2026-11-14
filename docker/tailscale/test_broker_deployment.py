@@ -243,6 +243,83 @@ class NativeDeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'differs from protected route'): worker.execute()
         self.assertEqual(effects, [])
 
+    def churn(self, root, cursor):
+        """What a restored running broker does every cycle: rewrite its ledger."""
+        self.write(Path(root) / 'https-broker-ledger.json', encode({'entries': {}, 'requests': {}, 'reconcileCursor': cursor}))
+
+    def test_running_broker_rewriting_ledger_after_restore_confirms(self):
+        worker, observer, states, effects = self.native(running=True)
+        root = self.targets[0]['root']
+        record = worker.record
+        def run_after_restore(name, value):
+            record(name, value)
+            if name == 'effect-0-bootstrap-ack.json':
+                self.churn(root, 1)
+        worker.record = run_after_restore
+        self.assertEqual(worker.execute()['kind'], 'committed')
+        # Later cycles keep rewriting the ledger and consuming inbox requests.
+        self.churn(root, 2)
+        self.assertEqual(worker.observe()['kind'], 'committed')
+
+    def test_changed_consumer_config_or_marker_still_refuses_after_restore(self):
+        for name in ('https_broker.py', 'host-config.json', 'channel/installed.json'):
+            with self.subTest(name):
+                self.setUp()  # A fresh committed deployment per case.
+                worker, observer, states, effects = self.native(running=True)
+                self.assertEqual(worker.execute()['kind'], 'committed')
+                path = Path(self.targets[0]['root']) / name
+                original = path.read_bytes()
+                self.write(path, encode({**json.loads(original), 'changed': True}) if name.endswith('.json') else original + b'\n')
+                self.assertEqual(worker.observe()['kind'], 'unresolved')
+
+    def test_missing_final_receipt_confirms_only_complete_evidence(self):
+        # The 9491d417 shape: committed and restored, then the old post-restore check
+        # refused the rewritten ledger before the final receipt was written.
+        worker, observer, states, effects = self.native(running=True)
+        root = self.targets[0]['root']
+        record = worker.record
+        def lose_receipt(name, value):
+            if name == 'deployment-commit.json':
+                raise ValueError('Existing channel or ledger changed')
+            record(name, value)
+            if name == 'effect-0-bootstrap-ack.json':
+                self.churn(root, 1)
+        worker.record = lose_receipt
+        with self.assertRaisesRegex(ValueError, 'ledger changed'): worker.execute()
+        self.assertFalse((self.evidence / 'deployment-commit.json').exists())
+        evidence = {path.name: path.read_bytes() for path in self.evidence.iterdir()}
+        self.churn(root, 2)
+        self.assertEqual(worker.observe()['kind'], 'committed')
+        self.assertEqual({path.name: path.read_bytes() for path in self.evidence.iterdir()}, evidence)
+        # Each incomplete or foreign shape stays unresolved.
+        commit = json.loads(evidence['commit.json'])
+        cases = [('ack-3.json', None), ('intent-5.json', None), ('effect-0-bootstrap-ack.json', None),
+                 ('effect-1-enable-ack.json', None), ('admission.json', None),
+                 ('commit.json', encode({**commit, 'planSha256': '0' * 64})),
+                 ('commit.json', encode({**commit, 'files': commit['files'][:7]})),
+                 ('abort-restored.json', encode({'outerPlanSha256': worker.outer}))]
+        for name, replacement in cases:
+            path = self.evidence / name
+            if replacement is None:
+                path.unlink()
+            else:
+                self.write(path, replacement)
+            self.assertEqual(worker.observe()['kind'], 'unresolved', name)
+            if name in evidence:
+                self.write(path, evidence[name])
+            else:
+                path.unlink()
+        outer, worker.outer = worker.outer, '0' * 64
+        self.assertEqual(worker.observe()['kind'], 'unresolved', 'plan digest')
+        worker.outer = outer
+        consumer = Path(root) / 'host_config.py'
+        original = consumer.read_bytes()
+        self.write(consumer, b'changed consumer')
+        self.assertEqual(worker.observe()['kind'], 'unresolved', 'consumer')
+        # Restoring the bytes does not restore the committed file's identity.
+        self.write(consumer, original)
+        self.assertEqual(worker.observe()['kind'], 'unresolved', 'rewritten consumer')
+
     def test_running_mode_refuses_wrong_mode_or_stale_digest_before_effects(self):
         worker, observer, states, effects = self.native(running=True)
         root = Path(self.targets[0]['root'])
