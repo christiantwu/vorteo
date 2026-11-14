@@ -466,14 +466,30 @@ test("an idle hosted session is closed at startup and its agent resumes on deman
   providers[1]!.complete();
   await expect.poll(() => first.manager.getAgent(watching.id)?.lifecycle).toBe("idle");
   await settled(first, paths, watching.id);
+  // An idle thread whose check never answers, as with a wedged provider.
+  const wedged = await runningAgent(first, workdir);
+  providers[2]!.canStopRuntime = () => new Promise<boolean>(() => {});
+  providers[2]!.complete();
+  await expect.poll(() => first.manager.getAgent(wedged.id)?.lifecycle).toBe("idle");
+  await settled(first, paths, wedged.id);
   first.crash();
 
   const second = startWorker(home, paths);
-  const plan = await planHostedStartup({ routing: second.routing, agents: second.storage, logger });
-  // The watcher's session is kept for its agent to adopt, with no prompt; the other is closed.
-  expect(plan).toMatchObject({ adopted: [watching.id], closed: [agent.id], lost: [] });
+  const started = Date.now();
+  const plan = await planHostedStartup({
+    routing: second.routing,
+    agents: second.storage,
+    logger,
+    checks: { deadlineMs: 50 },
+  });
+  // Well under the 10-second bound on a single check.
+  expect(Date.now() - started).toBeLessThan(5_000);
+  // The watcher's session is kept for its agent to adopt, with no prompt, and so is the one still
+  // unanswered at the deadline, which does not hold startup; the other is closed.
+  expect(plan).toMatchObject({ adopted: [watching.id, wedged.id], closed: [agent.id], lost: [] });
   expect(providers[0]!.closed).toBe(true);
   expect(providers[1]!.closed).toBe(false);
+  expect(providers[2]!.closed).toBe(false);
   expect(second.continued).toEqual([]);
   expect(await second.applied.read(agent.id)).toBeNull();
 
@@ -482,7 +498,7 @@ test("an idle hosted session is closed at startup and its agent resumes on deman
     agentStorage: second.storage,
     logger,
   });
-  expect(providers).toHaveLength(3);
+  expect(providers).toHaveLength(4);
 });
 
 test("sessions of a host that restarted are reported lost so the fallback can resume them", async () => {

@@ -35,20 +35,28 @@ async function closeHosted(client: SessionHostClient, sessionId: string): Promis
   await channel.call({ method: "close" });
 }
 
+/** Idle sessions checked at once at startup, and the bound on all of their checks together. */
+const STARTUP_CHECK_CONCURRENCY = 8;
+const STARTUP_CHECK_DEADLINE_MS = 20_000;
+
 /**
  * Whether an idle session's provider still holds background work, such as a background shell or
  * monitor that will wake the agent, which closing it would silently end. Asked only of a host
  * that advertises the check; an older host's sessions close as before. A check that fails or
- * times out keeps the session.
+ * times out keeps the session, and so does one still unanswered when the startup deadline passes.
  */
 async function holdsBackgroundWork(
   channel: HostedSession,
   capabilities: Record<string, unknown> | undefined,
-): Promise<boolean> {
-  if (capabilities?.runtimeStopCheck !== true) return false;
-  return !(await providerAllowsStop(
+  deadline: Promise<"deadline">,
+): Promise<"yes" | "no" | "deadline"> {
+  if (capabilities?.runtimeStopCheck !== true) return "no";
+  const allowed = providerAllowsStop(
     async () => (await channel.call({ method: "canStopRuntime" })) === true,
-  ));
+  );
+  const answer = await Promise.race([allowed, deadline]);
+  if (answer === "deadline") return "deadline";
+  return answer ? "no" : "yes";
 }
 
 /** Attaches after the last applied event; a stale or missing record rebuilds from what is left. */
@@ -80,6 +88,8 @@ export async function planHostedStartup(input: {
   routing: StartupRouting;
   agents: StoredAgentLookup;
   logger: Logger;
+  /** Overrides for tests: checks run at once and the deadline for all of them. */
+  checks?: { concurrency?: number; deadlineMs?: number };
 }): Promise<HostedStartupPlan> {
   const { routing, logger } = input;
   const records = await routing.applied.list();
@@ -96,10 +106,23 @@ export async function planHostedStartup(input: {
     return plan;
   }
   plan.hostReachable = true;
-  const listed = new Set<string>();
-  for (const summary of await client.list()) {
+  const connected: SessionHostClient = client;
+  const summaries = await connected.list();
+  const listed = new Set(summaries.map((summary) => summary.sessionId));
+  // The pass runs before the worker accepts clients, so a wedged host must not hold startup:
+  // checks run a few at a time, and any still unanswered at the deadline keep their sessions.
+  let deadlineTimer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<"deadline">((resolve) => {
+    deadlineTimer = setTimeout(
+      () => resolve("deadline"),
+      input.checks?.deadlineMs ?? STARTUP_CHECK_DEADLINE_MS,
+    );
+    deadlineTimer.unref();
+  });
+  type Outcome = "closed" | "adopted" | "background" | "deadline" | null;
+
+  async function decide(summary: (typeof summaries)[number]): Promise<Outcome> {
     const agentId = summary.sessionId;
-    listed.add(agentId);
     try {
       const stored = await input.agents.get(agentId);
       const snapshot = HostedSessionSnapshotSchema.safeParse(summary.snapshot);
@@ -108,40 +131,74 @@ export async function planHostedStartup(input: {
         snapshot.data.activeTurnId !== null ||
         snapshot.data.pendingPermissions.length > 0;
       const record = records.get(agentId);
-      const afterSeq = record && record.hostId === client.host.id ? record.lastAppliedSeq : 0;
+      const afterSeq = record && record.hostId === connected.host.id ? record.lastAppliedSeq : 0;
       // A turn that finished while no worker was attached, as during a long Host update, left
       // events no worker applied: the end of its output. Closing it here would lose them, so such
       // a session is adopted like a running one; the agent loads, applies them, and stays hosted
       // and idle as if the turn had ended under this worker.
       const unapplied = summary.lastSeq > afterSeq;
       if (!stored || stored.archivedAt) {
-        await closeHosted(client, agentId);
+        await closeHosted(connected, agentId);
         await routing.applied.remove(agentId);
-        plan.closed.push(agentId);
-        continue;
+        return "closed";
       }
-      const attached = await attachRunning(client, agentId, afterSeq);
+      const attached = await attachRunning(connected, agentId, afterSeq);
+      let outcome: Outcome = "adopted";
       // An idle session whose watcher is still alive is adopted without a prompt: the provider
       // survived this daemon restart, and its watcher will wake the agent.
-      if (
-        !running &&
-        !unapplied &&
-        !(await holdsBackgroundWork(
+      if (!running && !unapplied) {
+        const holds = await holdsBackgroundWork(
           attached.channel,
           snapshot.success ? snapshot.data.capabilities : undefined,
-        ))
-      ) {
-        await attached.channel.call({ method: "close" });
-        await routing.applied.remove(agentId);
-        plan.closed.push(agentId);
-        continue;
+          deadline,
+        );
+        if (holds === "no") {
+          await attached.channel.call({ method: "close" });
+          await routing.applied.remove(agentId);
+          return "closed";
+        }
+        outcome = holds === "yes" ? "background" : "deadline";
       }
-      routing.adoptions.set(agentId, { ...attached, hostId: client.host.id });
-      plan.adopted.push(agentId);
+      routing.adoptions.set(agentId, { ...attached, hostId: connected.host.id });
+      return outcome;
     } catch (error) {
       logger.warn({ err: error, agentId }, "Could not take over a hosted session at startup");
+      return null;
     }
   }
+
+  const outcomes: Outcome[] = Array.from({ length: summaries.length }, () => null);
+  let next = 0;
+  const concurrency = Math.max(1, input.checks?.concurrency ?? STARTUP_CHECK_CONCURRENCY);
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, summaries.length) }, async () => {
+        while (next < summaries.length) {
+          const index = next++;
+          outcomes[index] = await decide(summaries[index]!);
+        }
+      }),
+    );
+  } finally {
+    clearTimeout(deadlineTimer);
+  }
+  // Listing order, so the plan does not depend on which check answered first.
+  summaries.forEach((summary, index) => {
+    const outcome = outcomes[index];
+    if (outcome === "closed") plan.closed.push(summary.sessionId);
+    else if (outcome !== null) plan.adopted.push(summary.sessionId);
+  });
+  const count = (kind: Outcome) => outcomes.filter((outcome) => outcome === kind).length;
+  if (summaries.length > 0)
+    logger.info(
+      {
+        closed: count("closed"),
+        adoptedForBackgroundWork: count("background"),
+        adoptedAtDeadline: count("deadline"),
+        adopted: count("adopted"),
+      },
+      "Planned hosted sessions at startup",
+    );
   for (const agentId of records.keys()) {
     if (listed.has(agentId)) continue;
     await routing.applied.remove(agentId);
