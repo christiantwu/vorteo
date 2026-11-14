@@ -21,6 +21,10 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 - Combine 1 source contributions; retain their release notes below
 
+- Keep the daemon inside its memory limit for long threads that switch accounts. Each switch now stores only its own new history as a streamed segment instead of a full copy, existing copies migrate on first read without deleting any of them, and a thread replays at most its newest 48 MB of retained history.
+- Opening or paging an unloaded thread reads its saved history without resuming it, so a client that pages every thread no longer keeps them all in memory. Saved reads run two at a time.
+- Give the production daemon worker a heap limit of a quarter of usable memory, capped at 12 GB, when that exceeds Node's default. A 64 GB Host gets 12 GB instead of about 4 GB; smaller machines and the packaged desktop app keep the default, and a heap flag in `NODE_OPTIONS` or the supervisor's arguments still wins.
+
 ## Unreleased - 2026-11-14
 
 ### Maintenance
