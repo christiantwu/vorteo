@@ -124,7 +124,8 @@ class NativeDeploymentTests(unittest.TestCase):
     setUp = BrokerDeploymentTests.setUp
     write = BrokerDeploymentTests.write
 
-    def native(self, dispositions=('loaded', 'absent'), enabled=(True, True), running=False):
+    def native(self, dispositions=('loaded', 'absent'), enabled=(True, True), running=False,
+               interpreter='/protected/python', image=None):
         """running: legacy pins verify and each loaded scheduler has a live generation."""
         import plistlib
         import subprocess
@@ -138,7 +139,7 @@ class NativeDeploymentTests(unittest.TestCase):
         for index, target in enumerate(self.targets):
             root = Path(target['root'])
             label = f'local.test.broker{index}'
-            argv = ['/protected/python', '-I', str(root / 'https_broker.py')]
+            argv = [interpreter, '-I', str(root / 'https_broker.py')]
             plist = self.artifacts / f'{label}.plist'
             raw = plistlib.dumps({'Label': label, 'ProgramArguments': argv, 'RunAtLoad': True, 'StartInterval': 10})
             self.write(plist, raw)
@@ -159,7 +160,9 @@ class NativeDeploymentTests(unittest.TestCase):
             states.append({'loaded': dispositions[index] == 'loaded', 'override': None if enabled[index] else True})
         self.plan.update({'evidenceDirectoryIdentity': directory_pin(self.evidence.stat()), 'bootUUID': boot, 'registrations': registrations, 'manualParticipants': []})
         # A running scheduler's generation is pid 40 + index while its job is loaded.
-        live = lambda: {40 + i: b['argv'] for i, (b, s) in enumerate(zip(bindings, states)) if running and s['loaded']}
+        # image: argv[0] a live generation reports, such as a framework launcher's re-exec.
+        live = lambda: {40 + i: [image or b['argv'][0]] + b['argv'][1:]
+                        for i, (b, s) in enumerate(zip(bindings, states)) if running and s['loaded']}
         class Kernel:
             def boot(self): return boot
             def pids(self, uid): return list(live())
@@ -216,6 +219,29 @@ class NativeDeploymentTests(unittest.TestCase):
         admission = json.loads((self.evidence / 'admission.json').read_bytes())
         self.assertEqual(admission['admission'], ['running', 'running'])
         self.assertEqual(worker.observe()['kind'], 'committed')
+
+    FRAMEWORK = '/opt/fixture/Python.framework/Versions/3.14'
+
+    def test_framework_launcher_generation_is_admitted(self):
+        # launchd runs bin/python3.14, which re-executes Python.app as argv[0].
+        worker, observer, states, effects = self.native(
+            running=True, interpreter=self.FRAMEWORK + '/bin/python3.14',
+            image=self.FRAMEWORK + '/Resources/Python.app/Contents/MacOS/Python')
+        self.assertEqual(worker.execute()['kind'], 'committed')
+        self.assertEqual(worker.observe()['kind'], 'committed')
+
+    def test_foreign_interpreter_running_the_route_is_refused(self):
+        from broker_deployment_observation import route_argv
+        launcher = self.FRAMEWORK + '/bin/python3.14'
+        binding = {'interpreter': launcher, 'argv': [launcher, '-I', '/root/https_broker.py']}
+        for argv0 in ('/usr/bin/python3', '/opt/fixture/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python',
+                      self.FRAMEWORK + '/Resources/Python.app/Contents/MacOS/Python3'):
+            self.assertFalse(route_argv([argv0, '-I', '/root/https_broker.py'], binding))
+        # A non-framework interpreter has no re-exec image to admit.
+        self.assertFalse(route_argv(['/x', '-I', '/r/https_broker.py'], {'interpreter': '/protected/python', 'argv': ['/protected/python', '-I', '/r/https_broker.py']}))
+        worker, observer, states, effects = self.native(running=True, interpreter=launcher, image='/usr/bin/python3')
+        with self.assertRaisesRegex(ValueError, 'differs from protected route'): worker.execute()
+        self.assertEqual(effects, [])
 
     def test_running_mode_refuses_wrong_mode_or_stale_digest_before_effects(self):
         worker, observer, states, effects = self.native(running=True)
