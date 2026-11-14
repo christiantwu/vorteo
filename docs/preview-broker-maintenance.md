@@ -118,6 +118,19 @@ managed and manual scope; this is not an assertion about arbitrary same-user
 imports. Participant commitments must cover the execution window and remain
 current. Imported or waiting generations must settle before replacement.
 
+When the pinned Python is a macOS framework launcher,
+`<framework>/Versions/<v>/bin/python<v>`, the executor runs the interpreter that
+launcher re-executes, `<framework>/Versions/<v>/Resources/Python.app/Contents/MacOS/Python`,
+and holds native child custody to that path and its argv. The path comes from the
+pinned, canonical launcher path by that fixed pattern only, never from the
+environment or `PATH`. It must be a canonical, owner-only executable outside
+writable Dev mounts, and its digest must not change during the invocation; if it
+is missing or fails those checks, preparation refuses. Any other interpreter path
+runs as pinned. The worker likewise admits a live broker generation whose argv is
+the binding argv, or the same argv with `argv[0]` replaced by that launcher's
+`Python.app` image, and refuses any other interpreter. A refused preparation
+records the first line of its error in the job detail and the installation log.
+
 Dispatch records child intent before a single spawn. An inherited private channel
 rechecks coordinator configuration, protected artifacts, full queue reservation
 and native child identity before each native boundary. The worker disables the
