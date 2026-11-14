@@ -1831,9 +1831,10 @@ export async function createPaseoDaemon(
     );
     return null;
   });
-  // A hosted session that ends with its host continues the way a restart would.
-  sessionHostRouting.onSessionLost = (agentId) => {
-    void agentManager.continueAfterHostedSessionLoss(agentId);
+  // A hosted session that ends with its host continues the way a restart would when it had a turn
+  // or background work in progress; an idle one is released and reopens on demand.
+  sessionHostRouting.onSessionLost = (agentId, loss) => {
+    void agentManager.continueAfterHostedSessionLoss(agentId, loss);
   };
   const hostedIdleRelease = startIdleReleaseForUpgrade(
     config.paseoHome,
