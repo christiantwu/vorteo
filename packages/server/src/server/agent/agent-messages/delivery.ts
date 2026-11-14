@@ -2,7 +2,6 @@ import type { PromptDispatchDisposition } from "../agent-prompt.js";
 import { randomUUID } from "node:crypto";
 import type { AgentPromptInput, AgentPromptContentBlock } from "../agent-sdk-types.js";
 import { prepareAgentMessage, type AgentPromptSource } from "./envelope.js";
-import { isRestartHoldError } from "../restart-hold.js";
 
 interface Message {
   recipientId: string;
@@ -44,6 +43,11 @@ interface Dependencies {
    * pause, so the sender gets the refusal instead of a queued receipt.
    */
   admit?(recipientId: string): void;
+  /**
+   * Errors that mean the recipient refused the message at admission, such as a quota latch.
+   * Only these are reported back to the sender; other failures keep their existing handling.
+   */
+  isRefusal?(error: unknown): boolean;
   /** Return a cancellation function. Production uses the daemon's event loop. */
   schedule?: (delayMs: number, callback: () => void) => () => void;
 }
@@ -80,6 +84,9 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       : prompts.flatMap((entry): AgentPromptContentBlock[] =>
           typeof entry === "string" ? [{ type: "text", text: entry }] : entry,
         );
+    // Once the provider has the prompt, a later failure (such as the run-start wait timing out)
+    // must not tell the sender the message was lost.
+    let handedOff = false;
     const request: DispatchRequest = {
       recipientId,
       messageIds: messages.map((message) => message.receipt.messageId),
@@ -89,6 +96,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       clearPendingPermissions: messages.some((message) => message.clearPendingPermissions),
       unarchive: messages.some((message) => message.unarchive !== false),
       onDispatch: (disposition) => {
+        handedOff = true;
         for (const message of messages) {
           try {
             message.onDispatch?.(disposition);
@@ -110,7 +118,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
         } catch (error) {
           for (const message of messages) message.reject(error);
           dependencies.onError(error, request);
-          reportRefusal(request, messages, error);
+          if (!handedOff) reportRefusal(request, messages, error);
           throw error;
         }
       });
@@ -123,13 +131,13 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
   }
 
   /**
-   * A sender already holds a queued receipt, so a refusal at dispatch reaches it as an errored
+   * A sender already holds a queued receipt, so a refusal before handoff reaches it as an errored
    * notification from the recipient. Notifications are never reported back, so this cannot loop.
-   * A restart hold is not reported: the daemon treats it as a wait, not a refusal.
+   * Only admission refusals are reported; a provider rejection or restart hold keeps its own path.
    */
   function reportRefusal(request: DispatchRequest, messages: Admitted[], error: unknown): void {
     const { recipientId } = request;
-    if (closed || isRestartHoldError(error)) return;
+    if (closed || !dependencies.isRefusal?.(error)) return;
     const reason = error instanceof Error ? error.message : String(error);
     for (const message of messages) {
       const { source } = message;

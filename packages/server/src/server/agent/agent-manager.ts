@@ -608,6 +608,14 @@ function matchesIdleObservation(
   return agent.updatedAt.getTime() === expected.updatedAt && agent.session === expected.session;
 }
 
+/** A thread held by a quota latch refused a prompt. */
+export class QuotaLatchError extends Error {}
+
+/** The recipient refused a prompt at admission because of a quota latch or reserve. */
+export function isQuotaAdmissionRefusal(error: unknown): boolean {
+  return error instanceof QuotaLatchError || error instanceof QuotaReserveAdmissionError;
+}
+
 /**
  * The quota latch a child inherits from its parent. A parent's latch means its account is
  * limited, so it holds only a child on that same account; see pauseQuotaTeam.
@@ -1456,7 +1464,7 @@ export class AgentManager {
     // (a child resumed or created around the latch); a child on another account has its own quota.
     const parentPaused = parent?.config?.quotaPausedAt && parent.provider === agent.provider;
     if (agent.config?.quotaPausedAt || parentPaused) {
-      throw new Error(
+      throw new QuotaLatchError(
         "Quota exhausted. This task is paused until the usage limit resets, then continues automatically unless resume is off. To continue sooner, select a preset and start a successor task.",
       );
     }
@@ -1602,21 +1610,36 @@ export class AgentManager {
   }
 
   /**
-   * Clears quota latches on accounts that are not known to be limited. Before latches were scoped
-   * to the exhausted account, one stop also latched teammates on other accounts, and nothing would
-   * ever release them. Runs once at daemon start; a latch on a still-limited account stays until
-   * its reset releases it.
+   * Clears quota latches the account-scoped rule would not have set. Before latches were scoped,
+   * one stop also latched teammates on other accounts, and nothing would ever release them. A
+   * latch stays while a teammate on its own account holds an unreleased usage-limit hold, with
+   * or without a reset time; that hold's release or reset path clears it. A hold set to Don't
+   * resume is never released automatically, so once its known reset time passes it no longer
+   * keeps teammates latched. Runs once at daemon start.
    */
   async releaseStaleQuotaPauses(): Promise<number> {
     const registry = this.requireRegistry();
-    const resetAt = new Date(this.now()).toISOString();
-    const limited = new Map<AgentProvider, boolean>();
+    const now = this.now();
+    const resetAt = new Date(now).toISOString();
+    const records = (await registry.list()).filter((record) => !record.archivedAt);
+    const byId = new Map(records.map((record) => [record.id, record]));
+    // Same team root as quotaRootId: a worker-profile supervisor and its workers.
+    const rootOf = (record: StoredAgentRecord) => {
+      const parent = byId.get(record.labels[PARENT_AGENT_ID_LABEL] ?? "");
+      return parent?.config?.profileLaunch?.worker ? parent.id : record.id;
+    };
+    const heldAccounts = new Set<string>();
+    for (const record of records) {
+      const hold =
+        this.agents.get(record.id)?.config.usageLimitHold ?? record.config?.usageLimitHold;
+      if (!hold || hold.releasedAt) continue;
+      if (hold.optOut && hold.resetsAt && Date.parse(hold.resetsAt) <= now) continue;
+      heldAccounts.add(JSON.stringify([rootOf(record), record.provider]));
+    }
     let released = 0;
-    for (const record of await registry.list()) {
-      if (record.archivedAt || !record.config?.quotaPausedAt) continue;
-      if (!limited.has(record.provider))
-        limited.set(record.provider, (await this.usageLimitedUntil(record.provider)) !== null);
-      if (limited.get(record.provider)) continue;
+    for (const record of records) {
+      if (!record.config?.quotaPausedAt) continue;
+      if (heldAccounts.has(JSON.stringify([rootOf(record), record.provider]))) continue;
       await this.clearQuotaPause(record.id, resetAt);
       released += 1;
     }

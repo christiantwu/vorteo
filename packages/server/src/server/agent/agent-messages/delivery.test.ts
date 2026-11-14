@@ -179,12 +179,19 @@ test("dispatch failures reject waits, report the refusal to the sender, and do n
     schedule: clock.schedule,
     dispatch: async (request) => {
       if (request.messageIds.includes("bad")) throw failed;
+      if (request.messageIds.includes("slow")) {
+        // The provider has the prompt; only the run-start wait failed afterwards.
+        request.onDispatch("turn_started");
+        throw new Error("Timed out waiting for the run to start");
+      }
       sent.push(request);
       return "steered";
     },
     onError: (error) => {
       errors.push(error);
     },
+    // Every failure counts as a refusal here, so only the handoff decides what is reported.
+    isRefusal: () => true,
     admit: (recipientId) => {
       if (recipientId === "latched") throw new Error("Quota exhausted.");
     },
@@ -211,10 +218,15 @@ test("dispatch failures reject waits, report the refusal to the sender, and do n
     delivery.waitForDispatch("parent", new AbortController().signal),
   ).rejects.toBe(failed);
   await Promise.all([before, after, expect(bad.dispatched).rejects.toBe(failed)]);
+  const slow = delivery.enqueue({ ...message, recipientId: "sibling", messageId: "slow" });
+  clock.advance(2000);
+  await expect(slow.dispatched).rejects.toThrow("Timed out");
   const next = delivery.enqueue({ ...message, messageId: "next" });
   await delivery.close();
   await expect(next.dispatched).resolves.toBe("steered");
-  expect(errors).toEqual([failed]);
+  expect(errors).toEqual([failed, expect.any(Error)]);
+  // Only the refusal before handoff is reported; the handed-off "slow" message is not.
+  expect(sent.filter((request) => request.recipientId === "worker")).toHaveLength(1);
   const report = sent.find((request) => request.recipientId === "worker");
   expect(parseAgentMessages(String(report?.prompt))).toEqual([
     {

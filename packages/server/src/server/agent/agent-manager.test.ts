@@ -3450,7 +3450,12 @@ test("a usage stop pauses only teammates on the exhausted account", async () => 
       manager.createAgent({ provider: "codex", cwd: workdir }, undefined, options),
     ).rejects.toThrow("Quota exhausted on this account");
 
-    // A latch the old team-wide rule left on account B clears at daemon start; A stays limited.
+    // A latch the old team-wide rule left on account B clears at daemon start. A stays latched
+    // while its hold is unreleased, even with no reset time more than an hour after the stop.
+    const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    await manager.updateUsageLimitHold(failing.id, (hold) =>
+      hold ? { ...hold, stoppedAt: longAgo } : undefined,
+    );
     const stale = await storage.get(otherAccount.id);
     if (!stale) throw new Error("Missing worker record");
     await storage.upsert({
@@ -3460,6 +3465,12 @@ test("a usage stop pauses only teammates on the exhausted account", async () => 
     await manager.releaseStaleQuotaPauses();
     expect((await storage.get(otherAccount.id))?.config?.quotaPausedAt).toBeUndefined();
     expect((await storage.get(sameAccount.id))?.config?.quotaPausedAt).toBeTruthy();
+    // Don't resume never releases the hold, so its passed reset unlatches its teammates.
+    await manager.updateUsageLimitHold(failing.id, (hold) =>
+      hold ? { ...hold, optOut: true, resetsAt: longAgo } : undefined,
+    );
+    await manager.releaseStaleQuotaPauses();
+    expect((await storage.get(sameAccount.id))?.config?.quotaPausedAt).toBeUndefined();
   } finally {
     await manager.flush();
     rmSync(workdir, { recursive: true, force: true });
