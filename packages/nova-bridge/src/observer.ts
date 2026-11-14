@@ -28,6 +28,8 @@ export type ObservedThread = Pick<
 export interface HistoryPage {
   entries: { seqEnd: number; timestamp: string; item: { type: string } }[];
   endCursor: Cursor | null;
+  /** First row of the page. Absent from older sources. */
+  startCursor?: Cursor | null;
   hasNewer: boolean;
   /** True when retained rows exist before this page. Absent from older sources. */
   hasOlder?: boolean;
@@ -336,9 +338,15 @@ export class WorkspaceObserver {
       errors: [] as { cursor: Cursor; timestamp: string }[],
       lastTimestamp: null as string | null,
     };
-    const consume = (page: HistoryPage, skipBefore: string | null) => {
+    const consume = (page: HistoryPage, skipBefore: string | null, readThrough?: Cursor) => {
       for (const entry of page.entries) {
         if (skipBefore !== null && entry.timestamp < skipBefore) continue;
+        if (
+          readThrough &&
+          readThrough.epoch === page.endCursor?.epoch &&
+          entry.seqEnd <= readThrough.seq
+        )
+          continue;
         result.changed = true;
         result.lastTimestamp = entry.timestamp;
         if (entry.item.type === "error" && page.endCursor)
@@ -379,8 +387,12 @@ export class WorkspaceObserver {
       seen.add(key);
       cursor = page.endCursor;
       if (pages >= MAX_HISTORY_PAGES) {
-        result.gap = true;
-        consume(await this.source.history(threadId), null);
+        // Re-anchor at the tail. It is a gap only if rows between the last row
+        // read and the tail's first row were skipped.
+        const tail = await this.source.history(threadId);
+        const first = tail.startCursor;
+        result.gap = !first || first.epoch !== cursor.epoch || first.seq > cursor.seq + 1;
+        consume(tail, null, cursor);
         break;
       }
     }

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   attentionKind,
+  daemonObservationSource,
   hasImportantChange,
   WorkspaceObserver,
   type Cursor,
@@ -11,6 +12,7 @@ import {
   type ObservationSource,
   type ObservedThread,
 } from "./observer.js";
+import type { DaemonAccess, ReadClient } from "./daemon.js";
 import { BridgeStore } from "./store.js";
 import { BridgeEvents } from "./events.js";
 
@@ -78,11 +80,19 @@ describe("relevant notifications", () => {
 const start = "2026-11-14T12:00:00.000Z";
 const later = "2026-11-14T12:01:00.000Z";
 
-// A daemon timeline with real tail/after paging semantics over many rows.
+interface TimelineRequest {
+  direction?: "tail" | "before" | "after";
+  cursor?: Cursor;
+  limit?: number;
+}
+
+// A daemon timeline with real tail/after paging over many rows. History goes
+// through daemonObservationSource, so the direction it chooses is what is tested.
 class LongTimeline implements ObservationSource {
   epoch = "one";
   rows = 31_000;
-  calls: (Cursor | undefined)[] = [];
+  offline = false;
+  calls: TimelineRequest[] = [];
   agent: ObservedThread = {
     id: "long",
     status: "idle",
@@ -94,22 +104,35 @@ class LongTimeline implements ObservationSource {
     attentionTimestamp: null,
     pendingPermissions: [],
   };
+  private readonly daemon = daemonObservationSource({
+    readClient: async () =>
+      ({
+        fetchAgentTimeline: async (_id: string, request: TimelineRequest) => this.fetch(request),
+      }) as unknown as ReadClient,
+  } as DaemonAccess);
   async list() {
+    if (this.offline) throw new Error("fixture disconnected");
     return { agents: [this.agent] };
   }
   async watch() {
     return async () => {};
   }
-  async history(_id: string, cursor?: Cursor): Promise<HistoryPage> {
-    this.calls.push(cursor);
+  history(id: string, cursor?: Cursor) {
+    return this.daemon.history(id, cursor);
+  }
+  private fetch(request: TimelineRequest): HistoryPage {
+    this.calls.push(request);
+    const { cursor, direction = "tail", limit = 100 } = request;
     const stale = cursor !== undefined && cursor.epoch !== this.epoch;
-    const from = cursor && !stale ? cursor.seq + 1 : Math.max(1, this.rows - 99);
-    const to = Math.min(this.rows, from + 99);
+    let from = Math.max(1, this.rows - limit + 1);
+    if (direction === "after" && !stale) from = cursor ? cursor.seq + 1 : 1;
+    const to = Math.min(this.rows, from + limit - 1);
     const entries = [];
     for (let seq = from; seq <= to; seq++)
       entries.push({ seqEnd: seq, timestamp: later, item: { type: "assistant_message" } });
     return {
       entries,
+      startCursor: { epoch: this.epoch, seq: from },
       endCursor: { epoch: this.epoch, seq: to },
       hasNewer: to < this.rows,
       hasOlder: from > 1,
@@ -150,28 +173,49 @@ describe("bounded history reads", () => {
     const source = new LongTimeline();
     const { observer, gaps } = observe(source);
     await observer.reconcile();
-    expect(source.calls).toEqual([undefined]);
+    expect(source.calls).toEqual([
+      { projection: "canonical", limit: 100, direction: "tail", cursor: undefined },
+    ]);
     // Every row read is after monitoring start and older rows exist: unknown, not quiet.
     expect(gaps()).toBe(1);
 
+    // A recovering scan does not read a thread whose update time and evidence are unchanged.
     source.calls = [];
+    source.offline = true;
+    await observer.reconcile();
+    source.offline = false;
+    await observer.reconcile();
+    expect(source.calls).toEqual([]);
+
     source.epoch = "two";
     source.agent = { ...source.agent, updatedAt: "2026-11-14T12:02:00.000Z" };
     await observer.reconcile();
-    expect(source.calls).toEqual([{ epoch: "one", seq: 31_000 }]);
+    expect(source.calls.map((call) => call.cursor)).toEqual([{ epoch: "one", seq: 31_000 }]);
     expect(gaps()).toBe(2);
   });
 
-  it("re-anchors at the tail and reports a gap when a thread outruns the forward window", async () => {
-    const source = new LongTimeline();
-    const { observer, gaps } = observe(source);
-    await observer.reconcile();
-    source.calls = [];
-    source.rows += 2_000;
-    source.agent = { ...source.agent, updatedAt: "2026-11-14T12:02:00.000Z" };
-    await observer.reconcile();
-    expect(source.calls.length).toBeLessThanOrEqual(6);
-    expect(source.calls.at(-1)).toBeUndefined();
-    expect(gaps()).toBe(2);
-  });
+  it.each([
+    { added: 2_000, gap: true },
+    { added: 550, gap: false },
+  ])(
+    "reads at most five pages forward, then re-anchors at the tail (added $added, gap $gap)",
+    async ({ added, gap }) => {
+      const source = new LongTimeline();
+      const { observer, gaps } = observe(source);
+      await observer.reconcile();
+      source.calls = [];
+      source.rows += added;
+      source.agent = { ...source.agent, updatedAt: "2026-11-14T12:02:00.000Z" };
+      await observer.reconcile();
+      expect(source.calls.map((call) => call.direction)).toEqual([
+        "after",
+        "after",
+        "after",
+        "after",
+        "after",
+        "tail",
+      ]);
+      expect(gaps()).toBe(gap ? 2 : 1);
+    },
+  );
 });
