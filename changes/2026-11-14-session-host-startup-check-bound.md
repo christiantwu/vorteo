@@ -1,6 +1,6 @@
 ### Fixes
 
-- A daemon restart beside a slow or wedged session host no longer stalls startup while it checks idle hosted sessions for background work. Checks run eight at a time with a 20-second limit for all of them; a session still unanswered at the limit is kept, with no prompt.
+- A daemon restart beside a slow or wedged session host no longer stalls startup while it checks idle hosted sessions for background work. Checks run eight at a time with a 20-second limit on the checks together; a session still unanswered at the limit is kept, with no prompt. The limit covers only these checks, not listing, attaching or closing sessions.
 
 ## Maintenance review
 

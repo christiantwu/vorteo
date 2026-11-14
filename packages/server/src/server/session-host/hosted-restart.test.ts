@@ -480,9 +480,9 @@ test("an idle hosted session is closed at startup and its agent resumes on deman
     routing: second.routing,
     agents: second.storage,
     logger,
-    checks: { deadlineMs: 50 },
+    checks: { deadlineMs: 1_000 },
   });
-  // Well under the 10-second bound on a single check.
+  // The hung check ends at the 1-second deadline, well under the 10-second bound on one check.
   expect(Date.now() - started).toBeLessThan(5_000);
   // The watcher's session is kept for its agent to adopt, with no prompt, and so is the one still
   // unanswered at the deadline, which does not hold startup; the other is closed.

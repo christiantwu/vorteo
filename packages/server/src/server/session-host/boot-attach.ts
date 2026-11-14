@@ -35,7 +35,7 @@ async function closeHosted(client: SessionHostClient, sessionId: string): Promis
   await channel.call({ method: "close" });
 }
 
-/** Idle sessions checked at once at startup, and the bound on all of their checks together. */
+/** Idle sessions checked at once at startup, and the bound on their background work checks. */
 const STARTUP_CHECK_CONCURRENCY = 8;
 const STARTUP_CHECK_DEADLINE_MS = 20_000;
 
@@ -109,8 +109,9 @@ export async function planHostedStartup(input: {
   const connected: SessionHostClient = client;
   const summaries = await connected.list();
   const listed = new Set(summaries.map((summary) => summary.sessionId));
-  // The pass runs before the worker accepts clients, so a wedged host must not hold startup:
-  // checks run a few at a time, and any still unanswered at the deadline keep their sessions.
+  // The pass runs before the worker accepts clients, so slow background work checks must not hold
+  // startup: they run a few at a time, and any still unanswered at the deadline keep their
+  // sessions. The deadline bounds only those checks, not listing, attaching or closing.
   let deadlineTimer: NodeJS.Timeout | undefined;
   const deadline = new Promise<"deadline">((resolve) => {
     deadlineTimer = setTimeout(
