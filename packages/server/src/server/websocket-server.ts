@@ -38,6 +38,7 @@ import { getHostName } from "./host-name.js";
 import { randomUUID } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { AgentManager, AgentMetricsSnapshot } from "./agent/agent-manager.js";
+import { isQuotaAdmissionRefusal } from "./agent/agent-manager.js";
 import { isRestartHoldError } from "./agent/restart-hold.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
@@ -818,6 +819,8 @@ export class VoiceAssistantWebSocketServer {
           await waitForAgentRunStartWithTimeout(agentManager, batch.recipientId);
         return disposition;
       },
+      admit: (recipientId) => agentManager.assertNoQuotaLatch(recipientId),
+      isRefusal: isQuotaAdmissionRefusal,
       onError: (err, batch) =>
         isRestartHoldError(err)
           ? this.logger.info(
