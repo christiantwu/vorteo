@@ -198,6 +198,41 @@ test("a switch keeps the thread, carries recorded context and replays every segm
       { type: "user_message", text: "continue" },
       { type: "assistant_message", text: "continued on claude" },
     ]);
+
+    // A second switch stores only what followed the first marker, chained to its segment.
+    await manager.switchAgentProfile(agent.id, {
+      config: { provider: "codex", cwd: workdir },
+      reason: "manual",
+      carriedContextChars: 0,
+    });
+    await manager.flush();
+    const switches = (await storage.get(agent.id))?.profileSwitches ?? [];
+    const second = switches.at(-1)?.marker;
+    const historyDir = join(workdir, "agent-switch-history", agent.id);
+    const segment = readFileSync(join(historyDir, `${second?.switchId}.segment.jsonl`), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(segment[0]).toMatchObject({
+      previousSwitchId: marker?.type === "profile_switch" ? marker.switchId : "",
+    });
+    expect(segment.slice(1).map((event) => event.item)).toEqual([
+      { type: "user_message", text: "continue" },
+      { type: "assistant_message", text: "continued on claude" },
+      second,
+    ]);
+    codex.history = [{ type: "assistant_message", text: "back on codex" }];
+    await manager.reloadAgentSession(agent.id, undefined, { rehydrateFromDisk: true });
+    await manager.hydrateTimelineFromProvider(agent.id);
+    expect((await manager.getTimelineRows(agent.id)).map((row) => row.item)).toEqual([
+      { type: "user_message", text: "fix the parser" },
+      { type: "assistant_message", text: "parser fixed on codex" },
+      marker,
+      { type: "user_message", text: "continue" },
+      { type: "assistant_message", text: "continued on claude" },
+      second,
+      { type: "assistant_message", text: "back on codex" },
+    ]);
   } finally {
     await manager.flush();
     cleanup();
@@ -589,3 +624,52 @@ test.each(["opencode", "opencode-retired"])(
     }
   },
 );
+
+test("legacy switch snapshots migrate to verified segments, and a failure keeps the originals", async () => {
+  const { workdir, storage, cleanup } = await fixture();
+  try {
+    const marker = (switchId: string) => ({
+      type: "profile_switch" as const,
+      switchId,
+      reason: "manual" as const,
+      from: { provider: "codex" },
+      to: { provider: "claude" },
+      carriedContextChars: 0,
+    });
+    const at = "2026-11-01T00:00:00.000Z";
+    const events = [
+      { timestamp: at, item: { type: "user_message", text: "first ✓ {not a brace}" } },
+      { timestamp: at, item: marker("one") },
+      { timestamp: at, turnId: "t", item: { type: "assistant_message", text: 'quoted "]" text' } },
+      { timestamp: at, item: marker("two") },
+    ];
+    const dir = join(workdir, "agent-switch-history", "legacy-agent");
+    mkdirSync(dir, { recursive: true });
+    const write = (name: string, value: unknown) =>
+      writeFileSync(join(dir, name), JSON.stringify(value, null, 2));
+    write("one.json", { switchId: "one", events: events.slice(0, 2) });
+    write("two.json", { switchId: "two", events });
+    write("orphan.json", { switchId: "orphan", events: [] });
+
+    // A truncated newest snapshot leaves every original file and no segments.
+    const intact = readFileSync(join(dir, "two.json"), "utf8");
+    writeFileSync(join(dir, "two.json"), intact.slice(0, intact.length / 2));
+    const before = readdirSync(dir).sort();
+    expect(await storage.switchHistory.read("legacy-agent", "two")).toBeNull();
+    expect(readdirSync(dir).sort()).toEqual(before);
+
+    writeFileSync(join(dir, "two.json"), intact);
+    const read = async () => {
+      const replayed = [];
+      for await (const event of (await storage.switchHistory.read("legacy-agent", "two")) ?? [])
+        replayed.push(event);
+      return replayed;
+    };
+    expect(await read()).toEqual(events);
+    // Superseded and orphaned snapshots go; the newest stays for a rolled-back daemon.
+    expect(readdirSync(dir).sort()).toEqual(["one.segment.jsonl", "two.json", "two.segment.jsonl"]);
+    expect(await read()).toEqual(events);
+  } finally {
+    cleanup();
+  }
+});

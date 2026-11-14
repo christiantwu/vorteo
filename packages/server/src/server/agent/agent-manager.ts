@@ -163,10 +163,11 @@ import {
 import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
 import { hasArmedFinishNotification, isSystemInjectedEnvelope } from "./agent-prompt.js";
 import {
-  buildSwitchHistory,
   prependSwitchHistory,
+  selectSwitchSegmentEvents,
   type ProfileSwitchRecord,
 } from "./profile-switch/history.js";
+import { SwitchHistoryTooLargeError } from "./profile-switch/history-store.js";
 import { readRecordedContext } from "./profile-switch/context.js";
 import type {
   AgentToolAccessSetting,
@@ -209,6 +210,40 @@ const STORED_AGENT_CAPABILITIES: AgentCapabilityFlags = {
 type TimeoutResult = "completed" | "timed_out";
 
 export class ProfileSwitchError extends Error {}
+
+export type ProviderSubagentHistoryEvent = Extract<AgentStreamEvent, { type: "provider_subagent" }>;
+
+/** Runs at most `limit` tasks at once, in arrival order. */
+class ConcurrencyLimit {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+
+  constructor(private readonly limit: number) {}
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    // A finishing task hands its slot straight to the next waiter.
+    if (this.active >= this.limit) await new Promise<void>((wake) => this.waiting.push(wake));
+    else this.active += 1;
+    try {
+      return await task();
+    } finally {
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.active -= 1;
+    }
+  }
+}
+
+/**
+ * Retained switch history replayed into a thread's in-memory timeline, in JSON bytes. Older
+ * events stay on disk. Parsed timeline objects cost a multiple of their JSON size, so this
+ * keeps one thread well inside the daemon's heap.
+ */
+const SWITCH_HISTORY_REPLAY_MAX_BYTES = 48 * 1024 * 1024;
+/** One switch's new history, in JSON bytes. A larger switch is refused before anything changes. */
+const SWITCH_SEGMENT_MAX_BYTES = 256 * 1024 * 1024;
+/** Saved transcripts read at once; each read holds one thread's history transiently. */
+const SAVED_TIMELINE_CONCURRENT_READS = 2;
 
 export interface AgentProfileSwitchInput {
   /** Fully resolved launch configuration for the target account and profile. */
@@ -1576,6 +1611,7 @@ export class AgentManager {
   private readonly idFactory: () => string;
   private readonly registry?: AgentStorage;
   private readonly durableTimelineStore?: AgentTimelineStore;
+  private readonly savedTimelineReads = new ConcurrencyLimit(SAVED_TIMELINE_CONCURRENT_READS);
   private readonly previousStatuses = new Map<string, AgentLifecycleStatus>();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
@@ -3101,18 +3137,42 @@ export class AgentManager {
     if (savedSource?.useRetainedTimeline && this.timelineStore.has(id))
       return this.timelineStore.fetch(id, options);
     if (!loadLegacyRows) throw new Error("Saved timeline storage is unavailable");
-    const rows = await loadLegacyRows();
+    const rows = await this.savedTimelineReads.run(loadLegacyRows);
     // Native transcripts predate durable timelines. Keep pagination stable across reads,
     // and reset cursors if the transcript changes, without registering a live session.
-    const epoch = createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+    // Hash row by row: one string for a whole long transcript can exceed the heap.
+    const hash = createHash("sha256");
+    for (const row of rows) hash.update(`${JSON.stringify(row)}\n`);
     const saved = new InMemoryAgentTimelineStore();
-    saved.initialize(id, { rows, epoch });
+    saved.initialize(id, { rows, epoch: hash.digest("hex") });
     return saved.fetch(id, options);
   }
 
   listProviderSubagents(parentAgentId: string): ProviderSubagentDescriptor[] {
     this.requirePublicAgent(parentAgentId);
     return this.providerSubagents.list(parentAgentId);
+  }
+
+  /**
+   * Lists an unloaded thread's provider children from its saved history without loading it.
+   * Only descriptors are kept; child transcripts load with the thread, which replaces these.
+   */
+  restoreSavedProviderSubagents(
+    parentAgentId: string,
+    events: readonly ProviderSubagentHistoryEvent[],
+  ): void {
+    if (this.agents.has(parentAgentId)) return;
+    const before = JSON.stringify(this.providerSubagents.list(parentAgentId));
+    const removed = this.providerSubagents.deleteParent(parentAgentId);
+    const updates: ProviderSubagentStoreEvent[] = [];
+    for (const { provider, event } of events) {
+      if (event.type === "timeline") continue;
+      updates.push(this.providerSubagents.apply(parentAgentId, provider, event));
+    }
+    // Paging rereads the same history; announce only an actual change.
+    if (JSON.stringify(this.providerSubagents.list(parentAgentId)) === before) return;
+    for (const event of [...removed, ...updates])
+      this.dispatch({ type: "provider_subagent", event });
   }
 
   listProviderSubagentActivity(): ProviderSubagentDescriptor[] {
@@ -3739,6 +3799,7 @@ export class AgentManager {
   async readStoredSwitchHistory(
     record: StoredAgentRecord,
     history: AsyncIterable<AgentStreamEvent>,
+    onProviderSubagent?: (event: ProviderSubagentHistoryEvent) => void,
   ): Promise<AgentTimelineRow[]> {
     const events: AgentStreamEvent[] = [];
     for await (const event of history) events.push(event);
@@ -3751,6 +3812,7 @@ export class AgentManager {
       passive: true,
     })) {
       const event = limitAgentStreamEventContent(rawEvent);
+      if (event.type === "provider_subagent") onProviderSubagent?.(event);
       if (event.type !== "timeline") continue;
       if (event.item.type === "user_message" && isSystemInjectedEnvelope(event.item.text)) continue;
       rows.push({
@@ -3830,10 +3892,20 @@ export class AgentManager {
       },
     };
     // The record only references this history once registration commits the switch.
-    await this.requireRegistry().writeSwitchHistory(
-      agentId,
-      buildSwitchHistory(sourceRows, record),
-    );
+    const previousSwitchId = source.profileSwitches?.at(-1)?.marker.switchId ?? null;
+    try {
+      await this.requireRegistry().switchHistory.writeSegment(agentId, {
+        switchId: record.marker.switchId,
+        previousSwitchId,
+        events: selectSwitchSegmentEvents(sourceRows, previousSwitchId, record),
+        maxBytes: SWITCH_SEGMENT_MAX_BYTES,
+      });
+    } catch (error) {
+      if (!(error instanceof SwitchHistoryTooLargeError)) throw error;
+      throw new ProfileSwitchError(
+        "This thread's history since its last switch is too large to switch accounts safely. Start a new task instead; this thread has not changed.",
+      );
+    }
 
     let session: AgentSession | undefined;
     let closedExisting: ManagedAgentClosed | undefined;
@@ -3885,6 +3957,11 @@ export class AgentManager {
       }
     }
     await this.appendTimelineItem(agentId, record.marker);
+    await this.requireRegistry()
+      .switchHistory.pruneUnreferenced(agentId, record.marker.switchId)
+      .catch((error: unknown) => {
+        this.logger.warn({ err: error, agentId }, "Failed to prune superseded switch history");
+      });
     this.logger.info(
       { agentId, from: record.marker.from.provider, to: record.marker.to.provider },
       "agent.profile.switched",
@@ -7553,20 +7630,13 @@ export class AgentManager {
   private async readSwitchHistory(agent: Pick<ActiveManagedAgent, "id" | "profileSwitches">) {
     const latest = agent.profileSwitches?.at(-1);
     if (!latest || !this.registry) return null;
-    try {
-      return await this.registry.readSwitchHistory(agent.id, latest.marker.switchId);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      // Keep the thread loadable and the switch visible when its retained history is gone.
-      this.logger.warn(
-        { agentId: agent.id },
-        "Retained history before a profile switch is missing",
-      );
-      return {
-        switchId: latest.marker.switchId,
-        events: [{ timestamp: latest.switchedAt, item: latest.marker }],
-      };
-    }
+    const retained = await this.registry.switchHistory.read(agent.id, latest.marker.switchId, {
+      maxBytes: SWITCH_HISTORY_REPLAY_MAX_BYTES,
+    });
+    if (retained) return retained;
+    // Keep the thread loadable and the switch visible when its retained history is unavailable.
+    this.logger.warn({ agentId: agent.id }, "Retained history before a profile switch is missing");
+    return [{ timestamp: latest.switchedAt, item: latest.marker }];
   }
 
   private async hydrateTimelineFromLegacyProviderHistory(

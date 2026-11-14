@@ -4,6 +4,13 @@ The initial baseline is cumulative; older entries do not cover every maintenance
 
 ## Unreleased - 2026-11-14
 
+### Fixed
+
+- Keep the daemon inside its memory limit for long threads that switch accounts. Each switch now stores only its own new history as a streamed segment instead of a full copy, existing copies migrate on first read, and a thread replays at most its newest 48 MB of retained history.
+- Opening or paging an unloaded thread reads its saved history without resuming it, so a client that pages every thread no longer keeps them all in memory. Saved reads run two at a time.
+
+## Unreleased - 2026-11-14
+
 ### Maintenance
 
 - Combine 1 source contributions; retain their release notes below
