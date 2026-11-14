@@ -1277,6 +1277,11 @@ export async function createPaseoDaemon(
   await agentStorage.initialize();
   const reserveRecoveryStops = await reconcileQuotaReserveStartup(agentStorage);
   logger.info({ reserveRecoveryStops }, "Quota reserve startup reconciliation completed");
+  const staleQuotaPausesReleased = await agentManager.releaseStaleQuotaPauses();
+  logger.info(
+    { staleQuotaPausesReleased },
+    "Released quota pauses on accounts that are not limited",
+  );
   const providerUsageService = new ProviderUsageService({
     logger,
     getProviderConfigs: () => daemonConfigStore.get().providers,
@@ -1976,15 +1981,17 @@ export async function createPaseoDaemon(
       if (!wsServer) throw new Error("Daemon is not accepting agent messages");
       return wsServer.agentMessages;
     },
+    // A quota-latched caller is still active: its notifications wait for the latch to clear
+    // instead of being dropped, so a supervisor learns what finished while it was paused.
     callerIsActive: async (agentId) => {
       const record = await agentStorage.get(agentId);
-      return record
-        ? !record.archivedAt &&
-            !record.config?.quotaPausedAt &&
-            !agentManager.getAgent(agentId)?.config.quotaPausedAt
-        : Boolean(agentManager.getAgent(agentId)) &&
-            !agentManager.getAgent(agentId)?.config.quotaPausedAt;
+      return record ? !record.archivedAt : Boolean(agentManager.getAgent(agentId));
     },
+    callerIsHeld: async (agentId) =>
+      Boolean(
+        agentManager.getAgent(agentId)?.config.quotaPausedAt ??
+        (await agentStorage.get(agentId))?.config?.quotaPausedAt,
+      ),
     ...createFinishObservation({
       agentManager,
       agentStorage,
