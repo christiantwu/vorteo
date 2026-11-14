@@ -818,6 +818,7 @@ export class VoiceAssistantWebSocketServer {
           await waitForAgentRunStartWithTimeout(agentManager, batch.recipientId);
         return disposition;
       },
+      admit: (recipientId) => agentManager.assertNoQuotaLatch(recipientId),
       onError: (err, batch) =>
         isRestartHoldError(err)
           ? this.logger.info(

@@ -608,6 +608,20 @@ function matchesIdleObservation(
   return agent.updatedAt.getTime() === expected.updatedAt && agent.session === expected.session;
 }
 
+/**
+ * The quota latch a child inherits from its parent. A parent's latch means its account is
+ * limited, so it holds only a child on that same account; see pauseQuotaTeam.
+ */
+function inheritedQuotaPause(
+  parent:
+    | { provider: AgentProvider; config?: { quotaPausedAt?: string | null } | null }
+    | null
+    | undefined,
+  provider: AgentProvider,
+): string | undefined {
+  return parent?.provider === provider ? (parent.config?.quotaPausedAt ?? undefined) : undefined;
+}
+
 /** Quota, usage-limit and controller custody each expect the agent's current session to stay. */
 function hasQuotaOrControllerHold(config: AgentSessionConfig): boolean {
   const usageLimitHeld = Boolean(config.usageLimitHold && !config.usageLimitHold.releasedAt);
@@ -1426,6 +1440,28 @@ export class AgentManager {
     return until;
   }
 
+  /**
+   * Refuses a thread held by a quota latch. Unknown threads pass; the full admission check
+   * reports them. Agent message delivery calls this at enqueue so a sender learns of the pause
+   * from its receipt instead of after the queued dispatch fails.
+   */
+  assertNoQuotaLatch(agentId: string): void {
+    const agent = this.agents.get(agentId) ?? this.registry?.getLoadedRecord(agentId);
+    if (!agent) return;
+    const parentId = agent.labels[PARENT_AGENT_ID_LABEL];
+    const parent = parentId
+      ? (this.agents.get(parentId) ?? this.registry?.getLoadedRecord(parentId))
+      : undefined;
+    // A parent's pause says its account is limited. It holds a child only on that same account
+    // (a child resumed or created around the latch); a child on another account has its own quota.
+    const parentPaused = parent?.config?.quotaPausedAt && parent.provider === agent.provider;
+    if (agent.config?.quotaPausedAt || parentPaused) {
+      throw new Error(
+        "Quota exhausted. This task is paused until the usage limit resets, then continues automatically unless resume is off. To continue sooner, select a preset and start a successor task.",
+      );
+    }
+  }
+
   assertQuotaNotPaused(agentId: string): void {
     const agent = this.agents.get(agentId) ?? this.registry?.getLoadedRecord(agentId);
     if (!agent) throw new Error(`Agent ${agentId} not found.`);
@@ -1439,11 +1475,7 @@ export class AgentManager {
     ) {
       throw new QuotaReserveAdmissionError("usage_unavailable");
     }
-    if (agent.config?.quotaPausedAt || parent?.config?.quotaPausedAt) {
-      throw new Error(
-        "Quota exhausted. This task is paused until the usage limit resets, then continues automatically unless resume is off. To continue sooner, select a preset and start a successor task.",
-      );
-    }
+    this.assertNoQuotaLatch(agentId);
     assertQuotaReserveAdmission(agent.config?.quotaReserve);
     assertQuotaReserveAdmission(parent?.config?.quotaReserve);
     this.assertFreshReserveObservation(agent);
@@ -1465,6 +1497,22 @@ export class AgentManager {
     return Number.isFinite(age) && age >= 0 && age <= (observation?.maxAgeMs ?? -1);
   }
 
+  /**
+   * The team latch covers only the exhausted account, so a supervisor with quota keeps running.
+   * It must not start a new worker into that account's wall instead.
+   */
+  private async assertWorkerAccountAvailable(
+    parent: ManagedAgent | StoredAgentRecord | null | undefined,
+    provider: AgentProvider,
+  ): Promise<void> {
+    if (!parent?.config?.profileLaunch?.worker || !this.registry) return;
+    const limitedUntil = await this.usageLimitedUntil(provider);
+    if (limitedUntil)
+      throw new Error(
+        `Quota exhausted on this account until ${limitedUntil}. Start the worker on another account.`,
+      );
+  }
+
   private async quotaRootId(failed: ManagedAgent): Promise<string> {
     const parentId = failed.labels[PARENT_AGENT_ID_LABEL];
     if (!parentId) return failed.id;
@@ -1474,19 +1522,26 @@ export class AgentManager {
   }
 
   /**
-   * Latches a worker team when one member stops at a usage limit, so a supervisor cannot keep
-   * starting work into the same wall. A thread without teammates only records its hold.
+   * Latches the members of a worker team that share the exhausted account when one member stops
+   * at a usage limit. Teammates on other accounts, the supervisor included, keep running: their
+   * quota is not spent. A supervisor still cannot start work into the same wall, because
+   * createAgent refuses a new worker on an account usageLimitedUntil reports as limited.
+   * A thread without teammates only records its hold.
    */
   private async pauseQuotaTeam(failed: ManagedAgent): Promise<void> {
     const pausedAt = new Date().toISOString();
     const rootId = await this.quotaRootId(failed);
-    const isTeammate = (labels: Record<string, string>, id: string) =>
-      id === rootId || labels[PARENT_AGENT_ID_LABEL] === rootId;
+    const isTeammate = (labels: Record<string, string>, id: string, provider: AgentProvider) =>
+      (id === rootId || labels[PARENT_AGENT_ID_LABEL] === rootId) && provider === failed.provider;
     // Only worker-profile teams latch: a worker's supervisor, or a supervisor itself.
     if (rootId === failed.id && !failed.config.profileLaunch?.worker) return;
     const records = (await this.registry?.list()) ?? [];
-    const loadedTeam = this.listAgents().filter((agent) => isTeammate(agent.labels, agent.id));
-    const storedTeam = records.filter((record) => isTeammate(record.labels, record.id));
+    const loadedTeam = this.listAgents().filter((agent) =>
+      isTeammate(agent.labels, agent.id, agent.provider),
+    );
+    const storedTeam = records.filter((record) =>
+      isTeammate(record.labels, record.id, record.provider),
+    );
     failed.config.quotaPausedAt = pausedAt;
     const team = loadedTeam;
     // Latch the entire team before persistence or cancellation can wake a parent.
@@ -1524,7 +1579,10 @@ export class AgentManager {
       }
     }
   }
-  /** Clears the team latch around one thread, for a resume after its usage limit reset. */
+  /**
+   * Clears the team latch around one thread, for a resume after its usage limit reset. Only
+   * teammates on the thread's own account clear: another account's latch waits for its own reset.
+   */
   async releaseQuotaTeam(agentId: string): Promise<void> {
     const registry = this.requireRegistry();
     const records = await registry.list();
@@ -1538,8 +1596,31 @@ export class AgentManager {
     const resetAt = new Date(this.now()).toISOString();
     for (const record of records) {
       if (record.id !== rootId && record.labels[PARENT_AGENT_ID_LABEL] !== rootId) continue;
+      if (record.provider !== subject.provider) continue;
       await this.clearQuotaPause(record.id, resetAt);
     }
+  }
+
+  /**
+   * Clears quota latches on accounts that are not known to be limited. Before latches were scoped
+   * to the exhausted account, one stop also latched teammates on other accounts, and nothing would
+   * ever release them. Runs once at daemon start; a latch on a still-limited account stays until
+   * its reset releases it.
+   */
+  async releaseStaleQuotaPauses(): Promise<number> {
+    const registry = this.requireRegistry();
+    const resetAt = new Date(this.now()).toISOString();
+    const limited = new Map<AgentProvider, boolean>();
+    let released = 0;
+    for (const record of await registry.list()) {
+      if (record.archivedAt || !record.config?.quotaPausedAt) continue;
+      if (!limited.has(record.provider))
+        limited.set(record.provider, (await this.usageLimitedUntil(record.provider)) !== null);
+      if (limited.get(record.provider)) continue;
+      await this.clearQuotaPause(record.id, resetAt);
+      released += 1;
+    }
+    return released;
   }
 
   private readonly pluginLifecycle: PluginLifecycle | undefined;
@@ -3153,6 +3234,9 @@ export class AgentManager {
       ? (this.agents.get(parentId) ?? (await this.registry?.get(parentId)))
       : undefined;
     if (parent) this.assertQuotaNotPaused(parent.id);
+    // Only team workers wait on the check; other creation must not yield here.
+    if (parent?.config?.profileLaunch?.worker)
+      await this.assertWorkerAccountAvailable(parent, config.provider);
     if (parent?.config?.profileLaunch?.worker) {
       const pending = this.pendingWorkerCreations.get(parent.id) ?? 0;
       const running = this.listAgents().filter(
@@ -3317,7 +3401,11 @@ export class AgentManager {
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
     await this.requireExternalMcpSupport(session, providerLaunchConfig, launchContext);
     const parentId = options.labels?.[PARENT_AGENT_ID_LABEL];
-    const pausedAt = parentId ? this.agents.get(parentId)?.config.quotaPausedAt : undefined;
+    // A latch that landed while this worker was starting.
+    const pausedAt = inheritedQuotaPause(
+      parentId ? this.agents.get(parentId) : undefined,
+      storedConfig.provider,
+    );
     if (pausedAt) storedConfig.quotaPausedAt = pausedAt;
     const agent = await this.registerSession(session, storedConfig, resolvedAgentId, {
       labels: options.labels,
@@ -3438,9 +3526,8 @@ export class AgentManager {
     } as AgentSessionConfig;
     const parentId = options?.labels?.[PARENT_AGENT_ID_LABEL];
     if (parentId) {
-      const parent = await this.registry?.get(parentId);
-      const pausedAt =
-        this.agents.get(parentId)?.config.quotaPausedAt ?? parent?.config?.quotaPausedAt;
+      const parent = this.agents.get(parentId) ?? (await this.registry?.get(parentId));
+      const pausedAt = inheritedQuotaPause(parent, handle.provider);
       if (pausedAt) mergedConfig.quotaPausedAt = pausedAt;
     }
     // Decide residency from durable state inside the lifecycle lane. A loader may

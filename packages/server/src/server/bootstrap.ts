@@ -1277,6 +1277,11 @@ export async function createPaseoDaemon(
   await agentStorage.initialize();
   const reserveRecoveryStops = await reconcileQuotaReserveStartup(agentStorage);
   logger.info({ reserveRecoveryStops }, "Quota reserve startup reconciliation completed");
+  const staleQuotaPausesReleased = await agentManager.releaseStaleQuotaPauses();
+  logger.info(
+    { staleQuotaPausesReleased },
+    "Released quota pauses on accounts that are not limited",
+  );
   const providerUsageService = new ProviderUsageService({
     logger,
     getProviderConfigs: () => daemonConfigStore.get().providers,

@@ -2,6 +2,7 @@ import type { PromptDispatchDisposition } from "../agent-prompt.js";
 import { randomUUID } from "node:crypto";
 import type { AgentPromptInput, AgentPromptContentBlock } from "../agent-sdk-types.js";
 import { prepareAgentMessage, type AgentPromptSource } from "./envelope.js";
+import { isRestartHoldError } from "../restart-hold.js";
 
 interface Message {
   recipientId: string;
@@ -38,6 +39,11 @@ interface DispatchRequest {
 interface Dependencies {
   dispatch(request: DispatchRequest): Promise<PromptDispatchDisposition>;
   onError(error: unknown, request: DispatchRequest): void;
+  /**
+   * Throws when the recipient would certainly refuse an agent message now, such as a quota
+   * pause, so the sender gets the refusal instead of a queued receipt.
+   */
+  admit?(recipientId: string): void;
   /** Return a cancellation function. Production uses the daemon's event loop. */
   schedule?: (delayMs: number, callback: () => void) => () => void;
 }
@@ -104,6 +110,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
         } catch (error) {
           for (const message of messages) message.reject(error);
           dependencies.onError(error, request);
+          reportRefusal(request, messages, error);
           throw error;
         }
       });
@@ -113,6 +120,33 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
         if (dispatching.get(recipientId) === dispatched) dispatching.delete(recipientId);
       })
       .catch(() => undefined);
+  }
+
+  /**
+   * A sender already holds a queued receipt, so a refusal at dispatch reaches it as an errored
+   * notification from the recipient. Notifications are never reported back, so this cannot loop.
+   * A restart hold is not reported: the daemon treats it as a wait, not a refusal.
+   */
+  function reportRefusal(request: DispatchRequest, messages: Admitted[], error: unknown): void {
+    const { recipientId } = request;
+    if (closed || isRestartHoldError(error)) return;
+    const reason = error instanceof Error ? error.message : String(error);
+    for (const message of messages) {
+      const { source } = message;
+      // A remote sender's id does not name a thread on this daemon.
+      if (source.kind !== "agent-message" || source.serverId) continue;
+      try {
+        api.enqueue({
+          recipientId: source.agentId,
+          prompt: `Your message ${message.receipt.messageId} was not delivered. ${reason}`,
+          source: { kind: "agent-notification", agentId: recipientId, event: "errored" },
+          activeTurnBehavior: "steer",
+          unarchive: false,
+        });
+      } catch (reportError) {
+        dependencies.onError(reportError, request);
+      }
+    }
   }
 
   function flush(recipientId: string): void {
@@ -139,10 +173,11 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
     if (group.length) dispatch(recipientId, group);
   }
 
-  return {
+  const api: AgentMessageDelivery = {
     hasPending: (recipientId) => pending.has(recipientId) || dispatching.has(recipientId),
     enqueue(message) {
       if (closed) throw new Error("Agent message delivery is closed");
+      if (message.source.kind === "agent-message") dependencies.admit?.(message.recipientId);
       let resolve!: Admitted["resolve"];
       let reject!: Admitted["reject"];
       const dispatched = new Promise<PromptDispatchDisposition>((accepted, failed) => {
@@ -189,4 +224,5 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       return closing;
     },
   };
+  return api;
 }

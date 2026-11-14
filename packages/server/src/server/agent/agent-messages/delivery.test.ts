@@ -170,20 +170,33 @@ test("explicit interrupt and conflicting session modes retain ordered dispatch b
   ]);
 });
 
-test("dispatch failures reject waits before and after flush and do not poison later messages", async () => {
+test("dispatch failures reject waits, report the refusal to the sender, and do not poison later messages", async () => {
   const clock = createClock();
-  const failed = new Error("provider rejected");
+  const failed = new Error("Quota exhausted. This task is paused.");
   const errors: unknown[] = [];
+  const sent: Array<{ recipientId: string; prompt: AgentPromptInput }> = [];
   const delivery = createAgentMessageDelivery({
     schedule: clock.schedule,
     dispatch: async (request) => {
       if (request.messageIds.includes("bad")) throw failed;
+      sent.push(request);
       return "steered";
     },
     onError: (error) => {
       errors.push(error);
     },
+    admit: (recipientId) => {
+      if (recipientId === "latched") throw new Error("Quota exhausted.");
+    },
   });
+  // A recipient known to be paused refuses at send time instead of returning a queued receipt.
+  expect(() =>
+    delivery.enqueue({
+      recipientId: "latched",
+      source: { kind: "agent-message", agentId: "worker" },
+      prompt: "report",
+    }),
+  ).toThrow("Quota exhausted.");
   const message = {
     recipientId: "parent",
     source: { kind: "agent-message" as const, agentId: "worker" },
@@ -202,6 +215,14 @@ test("dispatch failures reject waits before and after flush and do not poison la
   await delivery.close();
   await expect(next.dispatched).resolves.toBe("steered");
   expect(errors).toEqual([failed]);
+  const report = sent.find((request) => request.recipientId === "worker");
+  expect(parseAgentMessages(String(report?.prompt))).toEqual([
+    {
+      id: expect.any(String),
+      source: { kind: "agent-notification", agentId: "parent", event: "errored" },
+      text: "Your message bad was not delivered. Quota exhausted. This task is paused.",
+    },
+  ]);
 });
 
 test("canceling a completion wait leaves queued delivery intact", async () => {
