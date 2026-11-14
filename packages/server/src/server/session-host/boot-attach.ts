@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type { AppliedSeqStore } from "./applied-store.js";
 import { SessionHostClientError, type HostedSession, type SessionHostClient } from "./client.js";
+import { providerAllowsStop } from "./host.js";
 import type { HostedAdoption, HostedSessionRouting } from "./hosted-agent-client.js";
 import type { HostedAgentSession } from "./hosted-agent-session.js";
 import { HostedSessionSnapshotSchema } from "./session-contract.js";
@@ -11,7 +12,10 @@ export interface StoredAgentLookup {
 }
 
 export interface HostedStartupPlan {
-  /** Running hosted sessions attached and registered for adoption. */
+  /**
+   * Running hosted sessions, and idle ones whose provider holds background work, attached and
+   * registered for adoption.
+   */
   adopted: string[];
   /** Idle or orphaned hosted sessions closed; their agents resume on demand as usual. */
   closed: string[];
@@ -29,6 +33,22 @@ interface StartupRouting extends HostedSessionRouting {
 async function closeHosted(client: SessionHostClient, sessionId: string): Promise<void> {
   const channel = await client.attach({ sessionId, afterSeq: null });
   await channel.call({ method: "close" });
+}
+
+/**
+ * Whether an idle session's provider still holds background work, such as a background shell or
+ * monitor that will wake the agent, which closing it would silently end. Asked only of a host
+ * that advertises the check; an older host's sessions close as before. A check that fails or
+ * times out keeps the session.
+ */
+async function holdsBackgroundWork(
+  channel: HostedSession,
+  capabilities: Record<string, unknown> | undefined,
+): Promise<boolean> {
+  if (capabilities?.runtimeStopCheck !== true) return false;
+  return !(await providerAllowsStop(
+    async () => (await channel.call({ method: "canStopRuntime" })) === true,
+  ));
 }
 
 /** Attaches after the last applied event; a stale or missing record rebuilds from what is left. */
@@ -52,8 +72,9 @@ async function attachRunning(
  * First half of startup, before the worker accepts clients: attach every hosted session that is
  * still running a turn, waiting on a permission, or holding events no worker applied yet, and
  * register it for adoption, so whoever loads the agent first adopts it rather than starting a
- * second provider. Other idle sessions are closed and resume on demand like any other agent,
- * which also keeps the host from accumulating them.
+ * second provider. An idle session whose provider holds background work is adopted the same way.
+ * Other idle sessions are closed and resume on demand like any other agent, which also keeps the
+ * host from accumulating them.
  */
 export async function planHostedStartup(input: {
   routing: StartupRouting;
@@ -93,13 +114,28 @@ export async function planHostedStartup(input: {
       // a session is adopted like a running one; the agent loads, applies them, and stays hosted
       // and idle as if the turn had ended under this worker.
       const unapplied = summary.lastSeq > afterSeq;
-      if (!stored || stored.archivedAt || (!running && !unapplied)) {
+      if (!stored || stored.archivedAt) {
         await closeHosted(client, agentId);
         await routing.applied.remove(agentId);
         plan.closed.push(agentId);
         continue;
       }
       const attached = await attachRunning(client, agentId, afterSeq);
+      // An idle session whose watcher is still alive is adopted without a prompt: the provider
+      // survived this daemon restart, and its watcher will wake the agent.
+      if (
+        !running &&
+        !unapplied &&
+        !(await holdsBackgroundWork(
+          attached.channel,
+          snapshot.success ? snapshot.data.capabilities : undefined,
+        ))
+      ) {
+        await attached.channel.call({ method: "close" });
+        await routing.applied.remove(agentId);
+        plan.closed.push(agentId);
+        continue;
+      }
       routing.adoptions.set(agentId, { ...attached, hostId: client.host.id });
       plan.adopted.push(agentId);
     } catch (error) {

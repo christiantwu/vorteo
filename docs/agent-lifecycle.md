@@ -49,9 +49,13 @@ session with background work, such as a background shell, monitor or subagent me
 agent, gets one queued prompt to check those tasks and restart any it still needs. The worker
 caches that answer from the host a few seconds after each turn ends, because a host that ended
 cannot be asked; an agent seen running a turn with no answer cached counts as having background
-work. Every other agent is released like an idle one: no provider process starts and no prompt is
-sent until a prompt, queued message or client needs it. After a daemon restart, agents whose host
-also ended continue only when their record says they were running.
+work. A turn just started, or a turn call cut off by the host's end, counts as in flight, and a
+turn or a failed check clears the cached answer until the next check succeeds. Every other agent
+is released like an idle one: no provider process starts and no prompt is sent until a prompt,
+queued message or client needs it. After a daemon restart, agents whose host also ended continue
+only when their record says they were running. When the host survives a daemon restart, the new
+worker closes idle hosted sessions, except one whose provider reports background work: it is
+adopted without a prompt, so its watcher can still wake the agent.
 
 Change `agents.resumePrompt` or disable `agents.resumeOnStartup` in host config or Host settings >
 Agents. Disabling prevents startup dispatch. Recovery updates only an unchanged stored record;

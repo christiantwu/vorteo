@@ -460,12 +460,21 @@ test("an idle hosted session is closed at startup and its agent resumes on deman
   providers[0]!.complete();
   await expect.poll(() => first.manager.getAgent(agent.id)?.lifecycle).toBe("idle");
   await settled(first, paths, agent.id);
+  // An idle thread whose background watcher survives the daemon restart in the host.
+  const watching = await runningAgent(first, workdir);
+  providers[1]!.canStopRuntime = async () => false;
+  providers[1]!.complete();
+  await expect.poll(() => first.manager.getAgent(watching.id)?.lifecycle).toBe("idle");
+  await settled(first, paths, watching.id);
   first.crash();
 
   const second = startWorker(home, paths);
   const plan = await planHostedStartup({ routing: second.routing, agents: second.storage, logger });
-  expect(plan).toMatchObject({ adopted: [], closed: [agent.id], lost: [] });
+  // The watcher's session is kept for its agent to adopt, with no prompt; the other is closed.
+  expect(plan).toMatchObject({ adopted: [watching.id], closed: [agent.id], lost: [] });
   expect(providers[0]!.closed).toBe(true);
+  expect(providers[1]!.closed).toBe(false);
+  expect(second.continued).toEqual([]);
   expect(await second.applied.read(agent.id)).toBeNull();
 
   await ensureAgentLoaded(agent.id, {
@@ -473,7 +482,7 @@ test("an idle hosted session is closed at startup and its agent resumes on deman
     agentStorage: second.storage,
     logger,
   });
-  expect(providers).toHaveLength(2);
+  expect(providers).toHaveLength(3);
 });
 
 test("sessions of a host that restarted are reported lost so the fallback can resume them", async () => {
@@ -645,17 +654,37 @@ test("when the host dies, only interrupted turns and background work continue; i
     { workspaceId: undefined },
   );
   providers[2]!.canStopRuntime = async () => false;
-  for (const agent of [watching, busy]) await settled(worker, paths, agent.id);
+  // A thread whose last check found nothing, then ran another turn that started a watcher; the
+  // host dies before the check after that turn answers.
+  const rewatched = await runningAgent(worker, workdir);
+  let checked = 0;
+  providers[3]!.canStopRuntime = async () => {
+    checked++;
+    return true;
+  };
+  providers[3]!.complete();
+  await expect.poll(() => checked, { timeout: 6_000 }).toBeGreaterThan(0);
+  const second = (async () => {
+    for await (const _event of worker.manager.streamAgent(rewatched.id, "start a watcher")) {
+      // Drained until the turn ends.
+    }
+  })();
+  await expect.poll(() => worker.manager.getAgent(rewatched.id)?.lifecycle).toBe("running");
+  providers[3]!.canStopRuntime = () => new Promise<boolean>(() => {});
+  providers[3]!.complete();
+  await second;
+  for (const agent of [watching, busy, rewatched]) await settled(worker, paths, agent.id);
   await host.close();
 
   await expect
     .poll(() => worker.continued.toSorted(), { timeout: 5_000 })
-    .toEqual([watching.id, busy.id].toSorted());
+    .toEqual([watching.id, busy.id, rewatched.id].toSorted());
   expect(worker.interrupted.get(watching.id)).toBe("background");
+  expect(worker.interrupted.get(rewatched.id)).toBe("background");
   expect(worker.interrupted.get(busy.id)).toBe("turn");
   // The idle thread is closed and resumable: no provider started for it and no prompt queued.
   await expect.poll(() => worker.manager.getAgent(loaded.id), { timeout: 5_000 }).toBeNull();
-  await expect.poll(() => worker.local.length, { timeout: 5_000 }).toBe(2);
+  await expect.poll(() => worker.local.length, { timeout: 5_000 }).toBe(3);
   expect(await worker.applied.read(loaded.id)).toBeNull();
 
   // A prompt reopens it and the turn runs.
@@ -669,10 +698,10 @@ test("when the host dies, only interrupted turns and background work continue; i
       // Drained until the turn ends.
     }
   })();
-  await expect.poll(() => worker.local.length).toBe(3);
-  worker.local[2]!.complete();
+  await expect.poll(() => worker.local.length).toBe(4);
+  worker.local[3]!.complete();
   await turn;
-  expect(worker.local[2]!.calls).toEqual(["startTurn:next task"]);
+  expect(worker.local[3]!.calls).toEqual(["startTurn:next task"]);
   expect(worker.continued).not.toContain(loaded.id);
 });
 

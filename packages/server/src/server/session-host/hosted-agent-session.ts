@@ -238,6 +238,13 @@ export type HostedSessionLoss = "turn" | "background" | "idle";
  */
 const BACKGROUND_CHECK_DELAY_MS = 3_000;
 
+/** Calls that start or continue a turn before the host reports it. */
+const TURN_CALLS: ReadonlySet<SessionHostMethod> = new Set([
+  "startTurn",
+  "steerActiveTurn",
+  "respondToPermission",
+]);
+
 export class HostedAgentSession implements AgentSession {
   readonly provider: string;
   /** Goal state and commands, present only when the hosted session supports goals. */
@@ -283,6 +290,11 @@ export class HostedAgentSession implements AgentSession {
   private backgroundWork: boolean | null = null;
   /** Set when this worker saw a turn start in the current provider process. */
   private turnSeen = false;
+  /**
+   * Set when the connection ended under a call that starts or continues a turn. Its turn may have
+   * begun in the provider before the host could report it, so a loss now counts as a turn.
+   */
+  private turnCallCut = false;
   private backgroundCheckTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly options: HostedAgentSessionOptions) {
@@ -758,7 +770,15 @@ export class HostedAgentSession implements AgentSession {
     if (status === "lost") throw new StaleProviderSessionError(this.snapshot.id ?? "hosted");
     if (status === "reattaching") throw new HostedSessionReconnectingError();
     if (status !== "attached") throw new HostedSessionUnavailableError(status);
-    const value = await this.channel.call(call);
+    let value: JsonValue;
+    try {
+      value = await this.channel.call(call);
+    } catch (error) {
+      // The connection detaches this session before its pending calls settle, so a call cut by
+      // the host's end sees a status other than attached here.
+      if (TURN_CALLS.has(call.method) && this.status !== "attached") this.turnCallCut = true;
+      throw error;
+    }
     const result = parseCallResult(call.method as M, value);
     if (!result.success) throw new HostedSessionResultError(call.method);
     return result.data;
@@ -776,6 +796,8 @@ export class HostedAgentSession implements AgentSession {
     const event = this.interpret(value, seq);
     if (event?.type === "turn_started") {
       this.turnSeen = true;
+      // The turn may start background work, so the answer from before it no longer holds.
+      this.backgroundWork = null;
       this.clearBackgroundCheck();
     } else if (
       event?.type === "turn_completed" ||
@@ -806,7 +828,8 @@ export class HostedAgentSession implements AgentSession {
     try {
       this.backgroundWork = !(await check());
     } catch {
-      // Unanswered: keep the last answer rather than guess.
+      // Unanswered, as when the host is ending: unknown, so a session that ran a turn continues.
+      this.backgroundWork = null;
     }
   }
 
@@ -821,7 +844,12 @@ export class HostedAgentSession implements AgentSession {
    * a turn, so sessions merely loaded for reading are released without a prompt.
    */
   private lossKind(): HostedSessionLoss {
-    if (this.snapshot.activeTurnId || this.snapshot.pendingPermissions.length > 0) return "turn";
+    if (
+      this.snapshot.activeTurnId ||
+      this.snapshot.pendingPermissions.length > 0 ||
+      this.turnCallCut
+    )
+      return "turn";
     if (this.backgroundWork === true) return "background";
     if (this.backgroundWork === null && this.turnSeen) return "background";
     return "idle";
@@ -1025,6 +1053,8 @@ export class HostedAgentSession implements AgentSession {
       this.snapshot = HostedSessionSnapshotSchema.parse(next.channel.attach.snapshot);
       this.snapshotSeq = next.channel.attach.lastSeq;
       this.status = "attached";
+      // The host kept the session, so its snapshot reports any turn the cut call started.
+      this.turnCallCut = false;
       this.bind(next.channel);
       if (next.lossy) this.emit(this.lossyNotice(), null);
       if (this.interruptPending) {
