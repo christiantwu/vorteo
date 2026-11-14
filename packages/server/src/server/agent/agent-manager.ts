@@ -2720,10 +2720,20 @@ export class AgentManager {
   }
 
   /**
-   * The session host no longer runs this agent's session, as after a host crash. Like a restart,
-   * the agent continues from a queued message on a fresh session, hosted again when possible.
+   * The session host no longer runs this agent's session, as after a host crash or restart. An
+   * interrupted turn, or background work that died with the host, continues from a queued message
+   * on a fresh session, hosted again when possible. An idle session with nothing in progress is
+   * released like an idle agent and reopens on demand, so a host restart neither starts a provider
+   * for every loaded thread nor prompts threads that had no work.
    */
-  async continueAfterHostedSessionLoss(agentId: string): Promise<void> {
+  async continueAfterHostedSessionLoss(
+    agentId: string,
+    loss: "turn" | "background" | "idle" = "turn",
+  ): Promise<void> {
+    if (loss === "idle") {
+      await this.releaseAfterHostedSessionLoss(agentId);
+      return;
+    }
     if (this.agents.has(agentId)) {
       await this.drainSessionEvents(agentId).catch(() => {});
       // During a restart drain no session may open. The next worker loads the agent afresh and
@@ -2739,7 +2749,36 @@ export class AgentManager {
         }
       }
     }
-    await this.messageQueueControl?.queueHostedSessionContinuation?.(agentId, String(Date.now()));
+    await this.messageQueueControl?.queueHostedSessionContinuation?.(
+      agentId,
+      String(Date.now()),
+      loss,
+    );
+    this.messageQueueControl?.wake(agentId);
+  }
+
+  /**
+   * Leaves an idle agent whose host ended closed and resumable. A release the idle checks refuse,
+   * such as for an agent with a live goal, keeps the agent loaded on its lost session, which the
+   * next prompt replaces. Neither path starts a provider; queued work still runs.
+   */
+  private async releaseAfterHostedSessionLoss(agentId: string): Promise<void> {
+    if (this.agents.has(agentId)) {
+      await this.drainSessionEvents(agentId).catch(() => {});
+      if (!this.isRestartDraining()) {
+        const released = await this.releaseIdleSession(agentId).catch((error: unknown) => {
+          this.logger.warn(
+            { err: error, agentId },
+            "Could not release an idle agent after its host ended",
+          );
+          return false;
+        });
+        this.logger.info(
+          { agentId, released },
+          "Idle agent's hosted session ended with its host; it reopens on demand",
+        );
+      }
+    }
     this.messageQueueControl?.wake(agentId);
   }
 

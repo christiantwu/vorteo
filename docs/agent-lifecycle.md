@@ -42,6 +42,21 @@ is unset or false. Hosted-session recovery and
 native-goal continuation retain their own ownership checks. This setting does not approve a
 restart or bypass installation controls.
 
+Hosted-session recovery runs when the session host ends while the daemon keeps running, as in a
+tracked host restart. It sorts each loaded hosted agent by what the host's end interrupted. A turn
+or permission in flight gets a queued interrupted-turn continuation on a fresh session. An idle
+session with background work, such as a background shell, monitor or subagent meant to wake the
+agent, gets one queued prompt to check those tasks and restart any it still needs. The worker
+caches that answer from the host a few seconds after each turn ends, because a host that ended
+cannot be asked; an agent seen running a turn with no answer cached counts as having background
+work. A turn just started, or a turn call cut off by the host's end, counts as in flight, and a
+turn or a failed check clears the cached answer until the next check succeeds. Every other agent
+is released like an idle one: no provider process starts and no prompt is sent until a prompt,
+queued message or client needs it. After a daemon restart, agents whose host also ended continue
+only when their record says they were running. When the host survives a daemon restart, the new
+worker closes idle hosted sessions, except one whose provider reports background work: it is
+adopted without a prompt, so its watcher can still wake the agent.
+
 Change `agents.resumePrompt` or disable `agents.resumeOnStartup` in host config or Host settings >
 Agents. Disabling prevents startup dispatch. Recovery updates only an unchanged stored record;
 an intervening edit cancels that attempt and preserves the newer record for the next startup.
