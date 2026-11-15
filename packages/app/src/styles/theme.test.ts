@@ -277,11 +277,9 @@ describe("Vorton theme reference", () => {
 
   const KEPT_SCRIPTORIUM =
     "Owner kept Vorteo's heading accent (Freed's accent-primary) over Vorton's secondary.";
-  const KEPT_NEON = "Owner kept Vorteo's blue control accent over Vorton's violet.";
   // Differences the owner decided to keep.
   const DECIDED: DriftException[] = [
     ["scriptorium", "accent", "#86684a", "#b08a61", KEPT_SCRIPTORIUM],
-    ["neon", "accent", "#3b82f6", "#8b5cf6", KEPT_NEON],
   ];
 
   function canonicalColor(value: string): string {

@@ -754,7 +754,10 @@ const APPEARANCE_PALETTES: Record<AppearanceId, AppearancePalette> = {
     muted: "#8b8da8",
     border: "rgba(255,255,255,0.08)",
     strong: "rgba(139,92,246,0.24)",
-    accent: "#3b82f6",
+    // Vorton's violet (owner decision 2026-11-14, was blue #3b82f6). Black text on it is 4.96:1.
+    // As small text it reaches 4.5:1 only on root and deep (4.33 on surface, 3.80 on raised);
+    // the #a78bfa variant, also the focus ring, clears 5.9:1 on every surface.
+    accent: "#8b5cf6",
     bright: "#a78bfa",
   },
 };
