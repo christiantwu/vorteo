@@ -151,6 +151,15 @@ describe("Theme catalog", () => {
       }
     }
   });
+  it("keeps accent-coloured text readable on every working surface", () => {
+    for (const option of THEME_OPTIONS) {
+      if (!("theme" in option)) continue;
+      const c = option.theme.colors;
+      for (const surface of [c.surface0, c.surface1, c.surface2, c.surface3]) {
+        expect(contrast(c.accentText, surface), option.name).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
   it("offers all six reference themes and system selection without retired choices", () => {
     expect(THEME_OPTIONS.map((option) => option.name)).toEqual([
       "starship-light",
