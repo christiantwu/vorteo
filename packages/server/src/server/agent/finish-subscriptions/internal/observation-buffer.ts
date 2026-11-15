@@ -1,8 +1,14 @@
 import type { WaitForFinishResult } from "@getpaseo/client/internal/daemon-client";
 
 export type FinishObservationResult = WaitForFinishResult & {
-  reason?: "was canceled" | "host unreachable" | "host removed";
+  reason?: "was canceled" | "is not running" | "host unreachable" | "host removed";
 };
+
+/**
+ * Cancel reason a local observation uses for a child found closed at rest without an archive:
+ * stopped by a daemon restart or released while idle. It is not the child's end.
+ */
+export const NOT_RUNNING_CANCEL_REASON = "paseo:not-running";
 
 /** Coalesces duplicate checkpoints and retains one terminal result while delivery is pending. */
 export function createObservationBuffer(signal: AbortSignal) {

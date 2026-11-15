@@ -1995,6 +1995,9 @@ export async function createPaseoDaemon(
       agentManager,
       agentStorage,
       waitForResume: restartRecovery.waitForResume,
+      // A hosted turn still running at startup is reported live once adopted, never from the
+      // closed status the previous worker stored at shutdown.
+      pendingAdoption: (agentId) => sessionHostRouting.adoptions.has(agentId),
       serverId,
       logger,
       messages: () => {

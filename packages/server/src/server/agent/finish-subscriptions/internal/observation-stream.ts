@@ -2,7 +2,7 @@ import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import type { AgentStreamEvent } from "../../agent-sdk-types.js";
 import type { HostObservation } from "../../host-operations/index.js";
 import type { FinishSubscription, FinishObservationSession } from "../index.js";
-import { createObservationBuffer } from "./observation-buffer.js";
+import { createObservationBuffer, NOT_RUNNING_CANCEL_REASON } from "./observation-buffer.js";
 
 interface ObservationScope {
   use<T>(
@@ -46,7 +46,14 @@ function observeState(
       final: snapshot,
       lastMessage,
       error: snapshot.lastError ?? null,
-      ...(event?.type === "turn_canceled" ? { reason: "was canceled" as const } : {}),
+      ...(event?.type === "turn_canceled"
+        ? {
+            reason:
+              event.reason === NOT_RUNNING_CANCEL_REASON
+                ? ("is not running" as const)
+                : ("was canceled" as const),
+          }
+        : {}),
     });
   }
 }

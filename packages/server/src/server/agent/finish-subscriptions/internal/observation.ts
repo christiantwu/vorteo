@@ -9,6 +9,17 @@ import { openFinishObservation } from "./observation-stream.js";
 import type { AgentStreamEvent } from "../../agent-sdk-types.js";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import type { FinishObservation } from "../index.js";
+import type { StoredAgentRecord } from "../../agent-storage.js";
+import { NOT_RUNNING_CANCEL_REASON } from "./observation-buffer.js";
+
+/**
+ * A child closed at rest without an archive: a daemon restart or an idle release closed it, and it
+ * reopens on demand. That is not its end, so watchers wait for its next live outcome instead.
+ */
+function closedAtRest(stored: StoredAgentRecord | null): boolean {
+  return stored?.lastStatus === "closed" && !stored.archivedAt;
+}
+const notSettled = { status: "timeout", final: null, lastMessage: null, error: null } as const;
 
 export function createFinishObservation(input: {
   agentManager: AgentManager;
@@ -17,6 +28,8 @@ export function createFinishObservation(input: {
   waitForResume(agentId: string, signal: AbortSignal): Promise<void>;
   messages(): AgentMessageDelivery;
   hosts(): ToolHosts;
+  /** A hosted session still running a turn that this daemon will adopt after startup. */
+  pendingAdoption?(agentId: string): boolean;
   serverId: string;
   logger: Logger;
 }): FinishObservation {
@@ -31,7 +44,11 @@ export function createFinishObservation(input: {
         signal.throwIfAborted();
         const live = agentManager.getAgent(agentId);
         if (!live) {
+          // An adopted session reports its turn live once loaded; the continuous observation
+          // carries a child at rest. Neither has settled here.
+          if (input.pendingAdoption?.(agentId)) return notSettled;
           const stored = await agentStorage.get(agentId);
+          if (closedAtRest(stored)) return notSettled;
           return {
             status: stored?.lastStatus === "error" ? "error" : "idle",
             final: stored ? buildStoredAgentPayload(stored, [stored.provider]) : null,
@@ -68,6 +85,13 @@ export function createFinishObservation(input: {
         signal.throwIfAborted();
         const unsubscribe = agentManager.subscribe(
           (event) => {
+            // An automatic release closes a runtime that reopens on demand; it is not the end.
+            if (
+              event.type === "agent_state" &&
+              event.agent.lifecycle === "closed" &&
+              agentManager.isReleasingRuntime(agentId)
+            )
+              return;
             if (event.type === "agent_state" && event.agent.lifecycle !== "idle")
               publish(toAgentPayload(event.agent, { title: stored?.title }));
             else if (
@@ -93,6 +117,18 @@ export function createFinishObservation(input: {
             type: "turn_started",
             provider: current.provider,
           });
+        else if (input.pendingAdoption?.(agentId)) {
+          // Its turn is still running in the session host; the adoption load reports it live.
+        } else if (stored && closedAtRest(stored))
+          // Tell the watcher once that the child is not running; the subscription stays armed.
+          publish(
+            { ...buildStoredAgentPayload(stored, [stored.provider]), status: "idle" },
+            {
+              type: "turn_canceled",
+              provider: stored.provider,
+              reason: NOT_RUNNING_CANCEL_REASON,
+            },
+          );
         else publish(stored ? buildStoredAgentPayload(stored, [stored.provider]) : null);
         const stop = () => unsubscribe();
         signal.addEventListener("abort", stop, { once: true });
