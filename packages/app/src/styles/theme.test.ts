@@ -284,12 +284,9 @@ describe("Vorton theme reference", () => {
     reason: string,
   ];
 
-  const KEPT_SCRIPTORIUM =
-    "Owner kept Vorteo's heading accent (Freed's accent-primary) over Vorton's secondary.";
-  // Differences the owner decided to keep.
-  const DECIDED: DriftException[] = [
-    ["scriptorium", "accent", "#86684a", "#b08a61", KEPT_SCRIPTORIUM],
-  ];
+  // Differences the owner decided to keep. The owner decided every colour matches in all
+  // products, so the list is empty; declare a row here only for a future intentional difference.
+  const DECIDED: readonly DriftException[] = [];
 
   function canonicalColor(value: string): string {
     const text = value.trim().toLowerCase();
