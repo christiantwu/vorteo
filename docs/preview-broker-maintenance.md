@@ -130,6 +130,11 @@ runs as pinned. The worker likewise admits a live broker generation whose argv i
 the binding argv, or the same argv with `argv[0]` replaced by that launcher's
 `Python.app` image, and refuses any other interpreter. A refused preparation
 records the first line of its error in the job detail and the installation log.
+The coordinator uses the existing refusal sanitizer before deriving preparation
+and persistence reasons, removing terminal escapes and control characters and
+limiting text to one line. The requester relies on server-side sanitization of
+these fields and does not sanitize them itself. Local transport error formatting
+is unchanged.
 
 Preparation refuses before recording when admission or compatible readers are
 unavailable. Once recorded, a refused preparation returns the retained failed

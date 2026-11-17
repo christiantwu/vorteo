@@ -67,6 +67,7 @@ class MemoryJournal implements RestartJournal {
 class CanonicalLifecycleJournal implements RestartJournal {
   jobs: LifecycleJob[] = [];
   failWrite = false;
+  writeFailure = "disk unavailable";
 
   read(): LifecycleJob[] {
     return structuredClone(this.jobs);
@@ -77,7 +78,7 @@ class CanonicalLifecycleJournal implements RestartJournal {
   }
 
   write(jobs: LifecycleJob[]): void {
-    if (this.failWrite) throw new Error("disk unavailable");
+    if (this.failWrite) throw new Error(this.writeFailure);
     this.jobs = lifecycleJournal.parseLifecycleJournal(jobs);
   }
 }
@@ -433,8 +434,10 @@ test.each(["cancel", "revision", "persistence"] as const)(
       brokerDeployment: executor,
     });
     vi.mocked(executor.validateBrokerDeploymentPlan).mockImplementation(async () => {
-      if (change === "persistence") journal.failWrite = true;
-      else
+      if (change === "persistence") {
+        journal.failWrite = true;
+        journal.writeFailure = "\u001b[31mdisk unavailable\u001b[0m\nprivate persistence detail";
+      } else
         journal.mutate((previous) => {
           const next: LifecycleJob[] = [];
           for (const job of previous)
@@ -445,7 +448,7 @@ test.each(["cancel", "revision", "persistence"] as const)(
             );
           return next;
         });
-      throw new Error("candidate_invalid");
+      throw new Error("\u001b[31mcandidate_invalid\u001b[0m\nprivate preparation detail");
     });
     const input = brokerDeploymentPreparation();
     if (change === "persistence") {
