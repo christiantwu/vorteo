@@ -2629,12 +2629,38 @@ export const AgentProfileSwitchRequestMessageSchema = z.object({
   model: z.string().nullable().optional(),
   thinkingOptionId: z.string().nullable().optional(),
   reason: z.enum(["manual", "quota"]).optional(),
+  dryRun: z.boolean().optional(),
+  explanation: z.string().optional(),
+  sourceScope: z
+    .object({
+      provider: z.string(),
+      cwd: z.string(),
+      workspaceId: z.string().optional(),
+      projectId: z.string().optional(),
+    })
+    .optional(),
   requestId: z.string(),
 });
 
+export const AgentProfileSwitchResultSchema = z.object({
+  agentId: z.string(),
+  outcome: z.enum(["switched", "refused", "skipped", "would-switch"]),
+  provider: z.string().optional(),
+  model: z.string().nullable().optional(),
+  modeId: z.string().nullable().optional(),
+  thinkingOptionId: z.string().nullable().optional(),
+  features: z.record(z.string(), z.unknown()).optional(),
+  status: z.string().optional(),
+  error: z.string().optional(),
+  auditError: z.string().optional(),
+});
+export type AgentProfileSwitchResult = z.infer<typeof AgentProfileSwitchResultSchema>;
+
 export const AgentProfileSwitchResponseMessageSchema = z.object({
   type: z.literal("agent.profile.switch.response"),
-  payload: AgentActionResponsePayloadSchema,
+  payload: AgentActionResponsePayloadSchema.extend({
+    result: AgentProfileSwitchResultSchema.optional(),
+  }),
 });
 
 export const AgentDetachRequestMessageSchema = z.object({
@@ -4644,6 +4670,7 @@ export const ServerInfoStatusPayloadSchema = z
         agentConfigApply: z.boolean().optional(),
         // COMPAT(agentProfileSwitch): added in Vorteo 2026-10, remove gate after 2027-04-22.
         agentProfileSwitch: z.boolean().optional(),
+        agentProfileSwitchPreview: z.boolean().optional(),
         // COMPAT(agentProviderRecovery): added in Vorteo 2026-10, remove gate after 2027-04-28.
         agentProviderRecovery: z.boolean().optional(),
         // COMPAT(localProjectConfig): added in Vorteo 2026-10, remove gate after 2027-04-22.

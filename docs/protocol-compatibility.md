@@ -40,6 +40,20 @@ The app checks for the capability and either runs the feature or tells the user 
 
 Existing functionality keeps working across versions. Never gate an established request on a new enhancement: negotiate the optional enhancement at the client boundary and preserve the existing request for older hosts. Whole-turn pagination can require a capability; reading conversation history cannot.
 
+### Account switch previews and preconditions
+
+The optional `agentProfileSwitchPreview` capability gates `dryRun`, `explanation` and
+`sourceScope` on `agent.profile.switch.request`. The client refuses requests containing any
+of these fields before transmission when the host lacks the capability. Older schemas strip
+unknown fields, so sending a preview or source precondition to an older host could execute an
+unconditional switch.
+
+`sourceScope` is a precondition, never caller authority. Its provider, directory and workspace
+must match the source checked under the switch lifecycle lock; omitted `workspaceId` means
+an unassigned thread, not any workspace. A supplied project must still contain that workspace.
+The response's optional `result` reports each outcome and any audit-write failure. Enhancement
+callers retain structured refusals; legacy callers still reject `accepted: false` responses.
+
 ## Client capability ownership
 
 The client package advertises the protocol behavior it implements. Add each new capability to

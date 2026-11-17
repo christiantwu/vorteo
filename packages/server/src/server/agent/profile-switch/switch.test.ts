@@ -15,13 +15,15 @@ import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { AgentManager } from "../agent-manager.js";
 import { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import { claudeProjectDirSync } from "../providers/claude/project-dir.js";
-import { switchAgentProfileCommand } from "./command.js";
+import { selectProfileSwitchCandidates, switchAgentProfileCommand } from "./command.js";
 import { MessageQueueService } from "../../message-queue/service.js";
 import { MessageQueueStore } from "../../message-queue/store.js";
 import { QueueAttachmentStore } from "../../message-queue/attachments.js";
 import { AgentStorage } from "../agent-storage.js";
 import type {
   AgentClient,
+  ProviderCatalog,
+  AgentFeature,
   AgentPersistenceHandle,
   AgentProvider,
   AgentSession,
@@ -43,21 +45,43 @@ class FakeSession implements AgentSession {
   readonly capabilities = CAPABILITIES;
   readonly id = randomUUID();
 
+  private mode: string | null;
+
   constructor(
     readonly provider: AgentProvider,
     private readonly history: AgentTimelineItem[],
-  ) {}
+    private readonly config?: AgentSessionConfig,
+    readonly features: AgentFeature[] = [],
+  ) {
+    this.mode = config?.modeId ?? null;
+  }
 
   async run() {
     return { sessionId: this.id, finalText: "", timeline: [] };
   }
 
+  private readonly listeners = new Set<(event: AgentStreamEvent) => void>();
+  private turnId: string | undefined;
+
   async startTurn() {
-    return { turnId: randomUUID() };
+    this.turnId = randomUUID();
+    for (const listener of this.listeners)
+      listener({ type: "turn_started", provider: this.provider, turnId: this.turnId });
+    return { turnId: this.turnId };
   }
 
-  subscribe(): () => void {
-    return () => undefined;
+  completeTurn(): void {
+    if (!this.turnId) return;
+    for (const listener of this.listeners)
+      listener({ type: "turn_completed", provider: this.provider, turnId: this.turnId });
+    this.turnId = undefined;
+  }
+
+  subscribe(listener: (event: AgentStreamEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
@@ -65,7 +89,13 @@ class FakeSession implements AgentSession {
   }
 
   async getRuntimeInfo() {
-    return { provider: this.provider, sessionId: this.id, model: null, modeId: null };
+    return {
+      provider: this.provider,
+      sessionId: this.id,
+      model: this.config?.model ?? null,
+      modeId: this.mode,
+      thinkingOptionId: this.config?.thinkingOptionId,
+    };
   }
 
   async getAvailableModes() {
@@ -73,10 +103,12 @@ class FakeSession implements AgentSession {
   }
 
   async getCurrentMode() {
-    return null;
+    return this.mode;
   }
 
-  async setMode(): Promise<void> {}
+  async setMode(modeId: string): Promise<void> {
+    this.mode = modeId;
+  }
 
   getPendingPermissions() {
     return [];
@@ -96,8 +128,11 @@ class FakeSession implements AgentSession {
 class FakeClient implements AgentClient {
   readonly capabilities = CAPABILITIES;
   readonly created: AgentSessionConfig[] = [];
+  readonly sessions: FakeSession[] = [];
   readonly resumed: AgentPersistenceHandle[] = [];
   history: AgentTimelineItem[] = [];
+  catalog: ProviderCatalog = { models: [], modes: [] };
+  features: AgentFeature[] = [];
   createError: Error | null = null;
 
   constructor(readonly provider: AgentProvider) {}
@@ -106,14 +141,20 @@ class FakeClient implements AgentClient {
     return true;
   }
 
-  async fetchCatalog() {
-    return { models: [], modes: [] };
+  async fetchCatalog(): Promise<ProviderCatalog> {
+    return this.catalog;
+  }
+
+  async listFeatures(): Promise<AgentFeature[]> {
+    return this.features;
   }
 
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
     if (this.createError) throw this.createError;
     this.created.push(config);
-    return new FakeSession(this.provider, []);
+    const session = new FakeSession(this.provider, [], config, structuredClone(this.features));
+    this.sessions.push(session);
+    return session;
   }
 
   async resumeSession(handle: AgentPersistenceHandle): Promise<AgentSession> {
@@ -122,23 +163,300 @@ class FakeClient implements AgentClient {
   }
 }
 
+class TestStorage extends AgentStorage {
+  journalError: Error | null = null;
+
+  override async appendJournal(...args: Parameters<AgentStorage["appendJournal"]>) {
+    if (this.journalError) throw this.journalError;
+    return super.appendJournal(...args);
+  }
+}
+
 async function fixture() {
   const workdir = mkdtempSync(join(tmpdir(), "profile-switch-"));
   const logger = createTestLogger();
-  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const storage = new TestStorage(join(workdir, "agents"), logger);
   await storage.initialize();
   const codex = new FakeClient("codex");
   const claude = new FakeClient("claude");
-  const manager = new AgentManager({ clients: { codex, claude }, registry: storage, logger });
+  const second = new FakeClient("codex-second");
+  const manager = new AgentManager({
+    clients: { codex, claude, "codex-second": second },
+    providerDefinitions: {
+      codex: { enabled: true },
+      "codex-second": { enabled: true, derivedFromProviderId: "codex" },
+    },
+    registry: storage,
+    logger,
+  });
   return {
     workdir,
     storage,
     codex,
     claude,
+    second,
     manager,
     cleanup: () => rmSync(workdir, { recursive: true, force: true }),
   };
 }
+
+test("switch preparation preserves effective settings over target profile defaults or refuses before mutation", async () => {
+  const { workdir, storage, manager, codex, second, cleanup } = await fixture();
+  try {
+    const preserved = {
+      modeId: "bypassPermissions",
+      thinkingOptionId: "high",
+      featureValues: { fast: true, quality: "high" },
+    };
+    codex.features = [
+      { type: "toggle", id: "fast", label: "Fast", value: true },
+      {
+        type: "select",
+        id: "quality",
+        label: "Quality",
+        value: "high",
+        options: [
+          { id: "high", label: "High" },
+          { id: "low", label: "Low" },
+        ],
+      },
+    ];
+    second.features = structuredClone(codex.features);
+    second.catalog = {
+      models: [
+        {
+          provider: "codex-second",
+          id: "model",
+          label: "Model",
+          thinkingOptions: [{ id: "high", label: "High" }],
+        },
+      ],
+      modes: [],
+    };
+    const agent = await manager.createAgent(
+      {
+        provider: "codex",
+        cwd: workdir,
+        model: "model",
+        ...preserved,
+        featureValues: { fast: null, quality: null },
+      },
+      undefined,
+      { workspaceId: undefined },
+    );
+    const dependencies = {
+      agentManager: manager,
+      agentStorage: storage,
+      logger: createTestLogger(),
+      getAgentProfiles: () => [
+        {
+          id: "target",
+          name: "Target defaults",
+          provider: "codex-second",
+          model: "model",
+          modeId: "default",
+          thinkingOptionId: "low",
+          featureValues: { fast: false, quality: "low" },
+        },
+      ],
+      providerSnapshotManager: {
+        async resolveCreateConfig(
+          input: Parameters<ProviderSnapshotManager["resolveCreateConfig"]>[0],
+        ) {
+          expect(input.requestedMode).toBe(preserved.modeId);
+          expect(input.featureValues).toEqual(preserved.featureValues);
+          return { modeId: input.requestedMode, featureValues: input.featureValues };
+        },
+        async *readSessionHistory() {},
+      },
+    };
+    const target = { agentId: agent.id, provider: "codex-second", profileId: "target" };
+    await expect(switchAgentProfileCommand(dependencies, target)).rejects.toThrow(
+      "permission mode",
+    );
+    expect(second.created).toEqual([]);
+    expect((await storage.get(agent.id))?.profileSwitches ?? []).toEqual([]);
+    second.catalog.modes = [{ id: "bypassPermissions", label: "Bypass" }];
+    expect(
+      await switchAgentProfileCommand(
+        dependencies,
+        { ...target, dryRun: true },
+        { includeResult: true },
+      ),
+    ).toMatchObject({
+      outcome: "would-switch",
+      modeId: preserved.modeId,
+      thinkingOptionId: preserved.thinkingOptionId,
+      features: preserved.featureValues,
+    });
+    expect(second.created).toEqual([]);
+    await switchAgentProfileCommand(dependencies, target);
+    expect(second.created[0]).toMatchObject(preserved);
+    await manager.closeAgent(agent.id);
+  } finally {
+    cleanup();
+  }
+});
+
+test("batch candidates use workspace membership and exact source account", () => {
+  const agents = [
+    { id: "selected", provider: "source", workspaceId: "one" },
+    { id: "other-account", provider: "other", workspaceId: "one" },
+    { id: "same-project", provider: "source", workspaceId: "two" },
+    { id: "other-project", provider: "source", workspaceId: "three" },
+    { id: "unassigned", provider: "source" },
+  ];
+  const workspaces = [
+    { workspaceId: "one", projectId: "project" },
+    { workspaceId: "two", projectId: "project" },
+    { workspaceId: "three", projectId: "other" },
+  ];
+  expect(
+    selectProfileSwitchCandidates({
+      agents,
+      workspaces,
+      selection: { sourceProvider: "source", workspaceId: "one" },
+    }),
+  ).toEqual(["selected"]);
+  expect(
+    selectProfileSwitchCandidates({
+      agents,
+      workspaces,
+      selection: { sourceProvider: "source", projectId: "project" },
+    }),
+  ).toEqual(["selected", "same-project"]);
+  expect(() =>
+    selectProfileSwitchCandidates({ agents, workspaces, selection: { sourceProvider: "source" } }),
+  ).toThrow("exactly one");
+});
+
+test("an eligible switch preview leaves sessions, history, journal and timeline unchanged", async () => {
+  const { workdir, storage, codex, second, manager, cleanup } = await fixture();
+  try {
+    const agent = await manager.createAgent(
+      { provider: "codex", cwd: workdir, title: "Review work" },
+      undefined,
+      {
+        workspaceId: undefined,
+      },
+    );
+    await manager.appendTimelineItem(agent.id, { type: "user_message", text: "Keep this work" });
+    await manager.appendJournal(agent.id, { entryId: randomUUID(), text: "Approved scope" });
+    await manager.flush();
+    const before = await storage.get(agent.id);
+    const timeline = await manager.getTimelineRows(agent.id);
+    const journal = await manager.readJournal(agent.id);
+    const filesBefore = readdirSync(workdir, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => [
+        join(entry.parentPath, entry.name),
+        readFileSync(join(entry.parentPath, entry.name), "utf8"),
+      ]);
+    const dependencies = {
+      agentManager: manager,
+      agentStorage: storage,
+      logger: createTestLogger(),
+      providerSnapshotManager: {
+        async resolveCreateConfig() {
+          return { modeId: undefined, featureValues: undefined };
+        },
+        async *readSessionHistory() {},
+      },
+    };
+    const target = {
+      agentId: agent.id,
+      provider: "codex-second",
+      explanation: "Move the approved work",
+    };
+    const options = {
+      includeResult: true as const,
+      actor: { kind: "agent" as const, id: agent.id },
+    };
+    expect(
+      await switchAgentProfileCommand(dependencies, { ...target, dryRun: true }, options),
+    ).toMatchObject({ agentId: agent.id, provider: "codex-second", outcome: "would-switch" });
+    await manager.flush();
+    expect(codex.created).toHaveLength(1);
+    expect(second.created).toEqual([]);
+    expect(await storage.get(agent.id)).toEqual(before);
+    expect(await manager.readJournal(agent.id)).toEqual(journal);
+    expect(await manager.getTimelineRows(agent.id)).toEqual(timeline);
+    const filesAfter = readdirSync(workdir, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => [
+        join(entry.parentPath, entry.name),
+        readFileSync(join(entry.parentPath, entry.name), "utf8"),
+      ]);
+    expect(filesAfter).toEqual(filesBefore);
+    expect(
+      await switchAgentProfileCommand(dependencies, { ...target, dryRun: false }, options),
+    ).toMatchObject({ outcome: "switched" });
+    const afterJournal = await manager.readJournal(agent.id);
+    expect(afterJournal).toHaveLength(2);
+    expect(afterJournal[1]?.text).toContain("Thread “Review work” switched the account");
+    expect(afterJournal[1]?.text).toContain(target.explanation);
+    storage.journalError = new Error("Journal unavailable");
+    expect(
+      await switchAgentProfileCommand(
+        dependencies,
+        { ...target, provider: "codex", dryRun: false },
+        options,
+      ),
+    ).toMatchObject({ outcome: "switched", provider: "codex", auditError: "Journal unavailable" });
+    expect(manager.getAgent(agent.id)?.provider).toBe("codex");
+    storage.journalError = null;
+    expect(second.created).toHaveLength(1);
+    await manager.closeAgent(agent.id);
+  } finally {
+    cleanup();
+  }
+});
+
+test.each([false, true])(
+  "a settings change during target resolution refuses the switch before replacement (structured: %s)",
+  async (structured) => {
+    const { workdir, storage, codex, manager, cleanup } = await fixture();
+    try {
+      codex.catalog = { models: [], modes: [{ id: "default", label: "Default" }] };
+      const agent = await manager.createAgent(
+        { provider: "codex", cwd: workdir, modeId: "default" },
+        undefined,
+        { workspaceId: undefined },
+      );
+      const attempt = switchAgentProfileCommand(
+        {
+          agentManager: manager,
+          agentStorage: storage,
+          logger: createTestLogger(),
+          providerSnapshotManager: {
+            async resolveCreateConfig() {
+              await manager.setAgentMode(agent.id, "bypassPermissions");
+              return { modeId: "default", featureValues: undefined };
+            },
+            async *readSessionHistory() {},
+          },
+        },
+        { agentId: agent.id, provider: "codex" },
+        { includeResult: structured },
+      );
+      if (structured) {
+        await expect(attempt).resolves.toMatchObject({
+          outcome: "refused",
+          modeId: "default",
+          error: expect.stringContaining("settings changed"),
+        });
+      } else {
+        await expect(attempt).rejects.toThrow("settings changed");
+      }
+      expect(codex.created).toHaveLength(1);
+      expect(manager.getAgent(agent.id)?.config.modeId).toBe("bypassPermissions");
+      expect((await storage.get(agent.id))?.profileSwitches ?? []).toEqual([]);
+      await manager.closeAgent(agent.id);
+    } finally {
+      cleanup();
+    }
+  },
+);
 
 test("a switch keeps the thread, carries recorded context and replays every segment", async () => {
   const { workdir, storage, codex, claude, manager, cleanup } = await fixture();
@@ -239,18 +557,24 @@ test("a switch keeps the thread, carries recorded context and replays every segm
   }
 });
 
-test("a switch refuses while permission requests are pending", async () => {
-  const { workdir, manager, cleanup } = await fixture();
+test.each(["permission", "running"])("a switch refuses while busy (%s)", async (busy) => {
+  const { workdir, manager, codex, cleanup } = await fixture();
+  let run: Promise<unknown> | undefined;
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
     });
-    manager.getAgent(agent.id)?.pendingPermissions.set("permission", {
-      id: "permission",
-      provider: "codex",
-      name: "Bash",
-      kind: "tool",
-    });
+    if (busy === "running") {
+      run = manager.runAgent(agent.id, "Keep running until the fixture completes the turn");
+      await manager.waitForAgentRunStart(agent.id);
+      expect(manager.hasInFlightRun(agent.id)).toBe(true);
+    } else
+      manager.getAgent(agent.id)?.pendingPermissions.set("permission", {
+        id: "permission",
+        provider: "codex",
+        name: "Bash",
+        kind: "tool",
+      });
     await expect(
       manager.switchAgentProfile(agent.id, {
         config: { provider: "claude", cwd: workdir },
@@ -259,6 +583,8 @@ test("a switch refuses while permission requests are pending", async () => {
       }),
     ).rejects.toThrow("Wait for the current turn");
   } finally {
+    for (const session of codex.sessions) session.completeTurn();
+    await run;
     await manager.flush();
     cleanup();
   }
@@ -348,7 +674,7 @@ test("an unloaded thread switches without the previous provider and retains its 
 test.each([false, true])(
   "recovery reads a disabled Claude account transcript (removed: %s)",
   async (removed) => {
-    const { workdir, storage, codex, cleanup, manager } = await fixture();
+    const { workdir, storage, claude, cleanup, manager } = await fixture();
     const configDir = join(workdir, "old-claude-account");
     const transcriptDir = claudeProjectDirSync(workdir, { configDir });
     mkdirSync(transcriptDir, { recursive: true });
@@ -387,10 +713,14 @@ test.each([false, true])(
           env: { CLAUDE_CONFIG_DIR: configDir },
         },
       },
-      extraClients: { codex },
+      extraClients: { claude },
     });
     const reader = new AgentManager({
-      clients: { codex },
+      clients: { claude },
+      providerDefinitions: {
+        claude: { enabled: true },
+        [provider]: { enabled: false, derivedFromProviderId: "claude" },
+      },
       registry: storage,
       logger: createTestLogger(),
     });
@@ -467,8 +797,8 @@ test.each([false, true])(
       ]);
       expect(reader.getAgent(id)).toBeNull();
       expect(await storage.get(id)).toEqual(before);
-      expect(codex.created).toHaveLength(0);
-      expect(codex.resumed).toHaveLength(0);
+      expect(claude.created).toHaveLength(0);
+      expect(claude.resumed).toHaveLength(0);
       expect(queueChanges).toBe(0);
       expect(await queueStore.read(id)).toEqual(queueBefore);
       expect(
@@ -514,7 +844,7 @@ test.each([false, true])(
         })),
       );
       expect(reconciliation.changed).toBe(true);
-      codex.createError = new Error("Replacement failed");
+      claude.createError = new Error("Replacement failed");
       await expect(
         switchAgentProfileCommand(
           {
@@ -523,11 +853,11 @@ test.each([false, true])(
             providerSnapshotManager: snapshots,
             logger: createTestLogger(),
           },
-          { agentId: id, provider: "codex" },
+          { agentId: id, provider: "claude" },
         ),
       ).rejects.toThrow("Replacement failed");
       expect(await storage.get(id)).toEqual(before);
-      codex.createError = null;
+      claude.createError = null;
       await switchAgentProfileCommand(
         {
           agentManager: reader,
@@ -535,13 +865,13 @@ test.each([false, true])(
           providerSnapshotManager: snapshots,
           logger: createTestLogger(),
         },
-        { agentId: id, provider: "codex" },
+        { agentId: id, provider: "claude" },
         { standingInstructions: "You are the Foreman." },
       );
       // Standing instructions, such as a Factory charter, lead the new session's prompt.
-      expect(codex.created.at(-1)?.systemPrompt).toMatch(/^You are the Foreman\.\n\n/);
-      expect(codex.created.at(-1)?.systemPrompt).toContain("Preserve my approved plan");
-      expect(codex.created.at(-1)?.systemPrompt).toContain("The next step is validation");
+      expect(claude.created.at(-1)?.systemPrompt).toMatch(/^You are the Foreman\.\n\n/);
+      expect(claude.created.at(-1)?.systemPrompt).toContain("Preserve my approved plan");
+      expect(claude.created.at(-1)?.systemPrompt).toContain("The next step is validation");
       expect(reader.getAgent(id)).toMatchObject({
         workspaceId: "retained-workspace",
         tasks: before?.tasks,
@@ -549,7 +879,7 @@ test.each([false, true])(
       });
       expect(await storage.get(id)).toMatchObject({
         title: "Original task",
-        provider: "codex",
+        provider: "claude",
         tasks: before?.tasks,
         journal: before?.journal,
       });

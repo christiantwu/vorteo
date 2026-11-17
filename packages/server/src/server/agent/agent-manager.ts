@@ -250,6 +250,22 @@ export interface AgentProfileSwitchInput {
   config: AgentSessionConfig;
   reason: ProfileSwitchTimelineItem["reason"];
   carriedContextChars: number;
+  /** Effective source settings captured before profile resolution. */
+  preservedSettings?: Pick<AgentSessionConfig, "modeId" | "thinkingOptionId" | "featureValues">;
+  /** Live settings captured by the command before any asynchronous target resolution. */
+  expectedSource?: {
+    config: AgentSessionConfig;
+    runtimeInfo?: AgentRuntimeInfo;
+    workspaceId?: string;
+    currentModeId?: string | null;
+    features?: AgentFeature[];
+  };
+  validateScope?: (source: {
+    provider: string;
+    cwd: string;
+    workspaceId?: string;
+  }) => Promise<void>;
+  carryContext?: (context: string) => string;
   /** Captured without resuming the unavailable source account. Rechecked under the lifecycle lock. */
   storedSource?: { record: StoredAgentRecord; rows: AgentTimelineRow[] };
 }
@@ -3992,23 +4008,189 @@ export class AgentManager {
     );
   }
 
+  previewAgentProfile(
+    agentId: string,
+    input: AgentProfileSwitchInput,
+  ): Promise<AgentSessionConfig> {
+    return this.runLifecycleMutation(agentId, async () => {
+      const prepared = await this.prepareProfileSwitch(agentId, input);
+      return prepared.storedConfig;
+    });
+  }
+
+  private async prepareProfileSwitch(agentId: string, input: AgentProfileSwitchInput) {
+    this.assertAcceptingAgentRegistrations();
+    const { existing, source } = await this.resolveProfileSwitchSource(agentId, input.storedSource);
+    const expectedSource =
+      input.expectedSource ??
+      structuredClone({
+        config: source.config,
+        runtimeInfo: source.runtimeInfo,
+        workspaceId: source.workspaceId,
+        currentModeId: existing?.currentModeId,
+        features: existing?.features,
+      });
+    this.requireEnabledProvider(input.config.provider);
+    const client = await this.requireAvailableClient({ provider: input.config.provider });
+    const prepared = await this.prepareSessionConfig(input.config, agentId);
+    if (input.preservedSettings) {
+      await this.validateProfileSwitchSettings(
+        expectedSource.config.provider,
+        input.preservedSettings,
+        prepared.storedConfig,
+        client,
+      );
+    }
+    await input.validateScope?.({
+      provider: expectedSource.config.provider,
+      cwd: expectedSource.config.cwd,
+      workspaceId: expectedSource.workspaceId,
+    });
+    // Provider discovery and scope checks can yield while the source changes.
+    const current = await this.resolveProfileSwitchSource(agentId, input.storedSource);
+    if (
+      input.validateScope &&
+      !isDeepStrictEqual(
+        {
+          provider: current.stored?.provider,
+          cwd: current.stored?.cwd,
+          workspaceId: current.stored?.workspaceId,
+        },
+        {
+          provider: expectedSource.config.provider,
+          cwd: expectedSource.config.cwd,
+          workspaceId: expectedSource.workspaceId,
+        },
+      )
+    ) {
+      throw new ProfileSwitchError("The thread's scope changed. Retry the account switch.");
+    }
+    if (
+      current.existing !== existing ||
+      current.source.workspaceId !== expectedSource.workspaceId ||
+      !isDeepStrictEqual(current.source.config, expectedSource.config) ||
+      !isDeepStrictEqual(current.source.runtimeInfo, expectedSource.runtimeInfo) ||
+      current.existing?.currentModeId !== expectedSource.currentModeId ||
+      !isDeepStrictEqual(current.existing?.features, expectedSource.features)
+    ) {
+      throw new ProfileSwitchError("The thread's settings changed. Retry the account switch.");
+    }
+    return { existing, source, client, ...prepared };
+  }
+
+  private async validateProfileSwitchSettings(
+    sourceProvider: AgentProvider,
+    preserved: NonNullable<AgentProfileSwitchInput["preservedSettings"]>,
+    target: AgentSessionConfig,
+    client: AgentClient,
+  ): Promise<void> {
+    const sourceFamily = this.resolveProviderFamily(sourceProvider);
+    if (
+      sourceProvider !== target.provider &&
+      (!sourceFamily || sourceFamily !== this.resolveProviderFamily(target.provider))
+    ) {
+      throw new ProfileSwitchError(
+        "Incompatible target: permission and feature preservation across providers cannot be established.",
+      );
+    }
+    const resolved = {
+      modeId: target.modeId,
+      thinkingOptionId: target.thinkingOptionId,
+      featureValues: target.featureValues ?? {},
+    };
+    const expected = {
+      modeId: preserved.modeId,
+      thinkingOptionId: preserved.thinkingOptionId,
+      featureValues: preserved.featureValues ?? {},
+    };
+    if (!isDeepStrictEqual(resolved, expected)) {
+      throw new ProfileSwitchError(
+        "Incompatible target: profile resolution changed preserved mode, thinking or feature values.",
+      );
+    }
+    const catalog = await client.fetchCatalog({
+      scope: "workspace",
+      cwd: target.cwd,
+      force: false,
+      providerOptions: target.providerOptions,
+    });
+    if (
+      target.modeId
+        ? !catalog.modes.some((mode) => mode.id === target.modeId)
+        : catalog.modes.length > 0
+    ) {
+      throw new ProfileSwitchError(
+        "Incompatible target: the preserved permission mode is unsupported or unknown.",
+      );
+    }
+    const model = target.model
+      ? catalog.models.find(
+          (candidate) =>
+            candidate.id === target.model || candidate.aliases?.includes(target.model!),
+        )
+      : catalog.models.find((candidate) => candidate.isDefault);
+    if (target.model && !model)
+      throw new ProfileSwitchError("Incompatible target: the model is not advertised.");
+    if (
+      target.thinkingOptionId
+        ? !model?.thinkingOptions?.some((option) => option.id === target.thinkingOptionId)
+        : (model?.thinkingOptions?.length ?? 0) > 0
+    ) {
+      throw new ProfileSwitchError(
+        "Incompatible target: the preserved thinking option is not advertised for this model.",
+      );
+    }
+    await this.validateProfileSwitchFeatures(target, client);
+  }
+
+  private async validateProfileSwitchFeatures(
+    target: AgentSessionConfig,
+    client: AgentClient,
+  ): Promise<void> {
+    const entries = Object.entries(target.featureValues ?? {});
+    const features = (await client.listFeatures?.(target)) ?? [];
+    if (features.some((feature) => !Object.hasOwn(target.featureValues ?? {}, feature.id))) {
+      throw new ProfileSwitchError(
+        "Incompatible target: effective source feature values are unknown.",
+      );
+    }
+    for (const [id, value] of entries) {
+      const feature = features.find((candidate) => candidate.id === id);
+      const supported =
+        feature?.type === "toggle"
+          ? typeof value === "boolean"
+          : feature?.type === "select" &&
+            typeof value === "string" &&
+            feature.options.some((option) => option.id === value);
+      if (!supported)
+        throw new ProfileSwitchError(
+          `Incompatible target: preserved feature '${id}' is unsupported.`,
+        );
+    }
+  }
+
   private async switchAgentProfileInternal(
     agentId: string,
     input: AgentProfileSwitchInput,
   ): Promise<ManagedAgent> {
-    this.assertAcceptingAgentRegistrations();
-    const {
-      existing,
-      source,
-      rows: sourceRows,
-    } = await this.resolveProfileSwitchSource(agentId, input.storedSource);
-
-    this.requireEnabledProvider(input.config.provider);
-    const client = await this.requireAvailableClient({ provider: input.config.provider });
-    const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
-      input.config,
-      agentId,
-    );
+    const { existing, source, client, storedConfig, launchConfig, paseoToolPolicy } =
+      await this.prepareProfileSwitch(agentId, input);
+    if (existing) await this.hydrateTimelineFromLegacyProviderHistory(existing);
+    const sourceRows = input.storedSource
+      ? input.storedSource.rows
+      : this.timelineStore.getRows(agentId);
+    let carriedContextChars = input.carriedContextChars;
+    if (input.carryContext) {
+      const context = readRecordedContext(sourceRows.map((row) => row.item));
+      const instructions = input.carryContext(context);
+      storedConfig.systemPrompt = [storedConfig.systemPrompt, instructions]
+        .filter(Boolean)
+        .join("\n\n");
+      launchConfig.systemPrompt = [launchConfig.systemPrompt, instructions]
+        .filter(Boolean)
+        .join("\n\n");
+      carriedContextChars = context.length;
+    }
     const hadPreviousPaseoToolPolicy = this.paseoToolPolicies.has(agentId);
     const previousPaseoToolPolicy = this.paseoToolPolicies.get(agentId);
     const launchContext = await this.buildLaunchContext(
@@ -4037,7 +4219,7 @@ export class AgentManager {
           source.runtimeInfo?.model ?? source.config.model,
         ),
         to: describeProfileEndpoint(storedConfig, storedConfig.model),
-        carriedContextChars: input.carriedContextChars,
+        carriedContextChars,
       },
     };
     // The record only references this history once registration commits the switch.
@@ -4143,10 +4325,7 @@ export class AgentManager {
       );
     if (source.internal || source.config.controllerExecutionId)
       throw new ProfileSwitchError("This thread is managed by Vorteo and cannot switch accounts.");
-    if (existing) await this.hydrateTimelineFromLegacyProviderHistory(existing);
-    const rows = storedSource?.rows ?? this.timelineStore.getRows(agentId);
-
-    return { existing, source, rows };
+    return { existing, source, stored };
   }
 
   private profileSwitchSource(record: StoredAgentRecord | undefined) {
