@@ -160,22 +160,36 @@ const ownerPassword = "installation-browser-owner-password";
 const guestToken = "installation-browser-guest-request-token";
 const hostToken = "installation-browser-host-request-token";
 
+function phoneUnlockButton(page: Page) {
+  return page
+    .getByRole("button", { name: /^Unlock / })
+    .filter({ visible: true })
+    .first();
+}
+
 async function openOwnerUnlock(page: Page) {
   await expect(
     page
       .getByTestId("installation-password")
       .or(page.getByTestId("installation-owner-unlock"))
       .or(page.getByTestId("owner-access-owner-unlock"))
+      .or(phoneUnlockButton(page))
       .filter({ visible: true })
       .first(),
   ).toBeVisible();
   if (await page.getByTestId("installation-password").isVisible()) return;
-  await page
+  const lockControl = page
     .getByTestId("installation-owner-unlock")
     .or(page.getByTestId("owner-access-owner-unlock"))
     .filter({ visible: true })
-    .first()
-    .click();
+    .first();
+  if (await lockControl.isVisible()) {
+    await lockControl.click();
+    return;
+  }
+  // Phone Settings opens on a detail page without the sidebar lock control. There an owner
+  // taps a locked card's Unlock button ("Unlock <section>"), which opens the same password sheet.
+  await phoneUnlockButton(page).click();
 }
 
 async function connectReadyInstallationDaemon(kind: "host" | "container") {
@@ -3141,7 +3155,7 @@ test("shared skill catalog reviews files and preserves drafts through expired ow
   await expect(page.getByTestId("shared-skill-save")).toBeEnabled();
   await page
     .getByTestId("shared-skill-file-run.sh")
-    .getByRole("button", { name: "Inspect file", exact: true })
+    .getByRole("button", { name: "Inspect run.sh", exact: true })
     .click();
   await expect(page.getByText("After: 14 bytes, executable", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("shared-skill-review.png"), fullPage: true });
