@@ -2471,10 +2471,11 @@ test("shared skill selection reviews both environments and preserves the draft w
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
   await page.goto(`${origin}/settings/agents`);
   await page.getByRole("button", { name: "Choose skills", exact: true }).click();
-  await page.getByTestId("skill-selection-all").click();
-  const skill = page.getByTestId("skill-selection-list-card").getByRole("checkbox").first();
-  const name = await skill.getAttribute("aria-label");
-  if (!name) throw new Error("Missing bundled skill");
+  const sheet = page.getByRole("dialog", { name: "Choose skills", exact: true });
+  await expect(sheet).toBeVisible();
+  await sheet.getByTestId("skill-selection-all").click();
+  const name = "paseo";
+  const skill = sheet.getByRole("switch", { name, exact: true });
   await skill.click();
   const cancelled = page.waitForEvent("dialog").then(async (dialog) => {
     const message = dialog.message();
@@ -2483,14 +2484,14 @@ test("shared skill selection reviews both environments and preserves the draft w
     expect(message).toContain(`Dev container: ${name}`);
     return message;
   });
-  await Promise.all([page.getByTestId("skill-selection-save").click(), cancelled]);
+  await Promise.all([sheet.getByTestId("skill-selection-save").click(), cancelled]);
   await expect(page.getByTestId("skill-selection-sheet")).toBeVisible();
   for (const daemon of daemons) {
     const file = path.join(daemon.paseoHome, ".agents", "skills", name, "SKILL.md");
     expect((await readFile(file, "utf8")).length).toBeGreaterThan(0);
   }
   const accepted = page.waitForEvent("dialog").then((dialog) => dialog.accept());
-  await Promise.all([page.getByTestId("skill-selection-save").click(), accepted]);
+  await Promise.all([sheet.getByTestId("skill-selection-save").click(), accepted]);
   await expect(page.getByTestId("skill-selection-sheet")).not.toBeVisible();
   for (const kind of ["host", "container"] as const) {
     const client = await connectReadyInstallationDaemon(kind);
@@ -2520,7 +2521,7 @@ test("shared skill selection reviews both environments and preserves the draft w
     headers: { Origin: origin },
   });
   expect(lock.ok()).toBe(true);
-  await page.getByTestId("skill-selection-save").click();
+  await sheet.getByTestId("skill-selection-save").click();
   await expect(
     page
       .getByText("Unlock Installation controls in General settings to continue.", { exact: true })
