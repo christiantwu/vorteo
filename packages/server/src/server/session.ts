@@ -371,6 +371,11 @@ type ProviderSubagentManagerEvent = Extract<
 // Clients before 0.1.45 validate providers with z.enum(["claude", "codex", "opencode"]) and reject
 // the entire session message if they encounter an unknown provider.
 const LEGACY_PROVIDER_IDS = new Set(["claude", "codex", "opencode"]);
+// AgentManager.readStoredSwitchHistory's refusal when a native session replays no history. A
+// failed saved read is retried as a TimelineHistoryRetryError with the same message.
+const UNREADABLE_TRANSCRIPT_MESSAGE = "The original transcript could not be read.";
+// Provider families whose saved transcripts can be read without resuming the thread.
+const PASSIVE_HISTORY_PROVIDER_FAMILIES = new Set(["claude", "codex"]);
 const MIN_VERSION_ALL_PROVIDERS = "0.1.45";
 const MIN_VERSION_EXPLICIT_WORKSPACE_RECOVERY = "0.1.105";
 function errorToFriendlyMessage(error: unknown): string {
@@ -9786,10 +9791,11 @@ export class Session {
   }
 
   /**
-   * True for providers in the OpenCode family. Their saved transcripts can only be read by
-   * resuming the native session, which the snapshot manager refuses for passive reads.
+   * True for providers in the Claude and Codex families, whose native transcripts replay in
+   * full without resuming the thread. OpenCode refuses passive reads, and plugin and ACP
+   * providers may replay nothing, which the saved path reports as an unreadable transcript.
    */
-  private lacksPassiveHistoryReader(provider: string): boolean {
+  private readsHistoryPassively(provider: string): boolean {
     const { providerDefinitions } = this.providerSnapshotManager.getAgentManagerProviderState();
     const seen = new Set<string>();
     let current = provider;
@@ -9799,7 +9805,7 @@ export class Session {
       if (!base) break;
       current = base;
     }
-    return current === "opencode";
+    return PASSIVE_HISTORY_PROVIDER_FAMILIES.has(current);
   }
 
   private async fetchControlTimeline(
@@ -9851,14 +9857,27 @@ export class Session {
     };
     // Reading history never resumes a thread. A resumed thread stays registered with its
     // whole history resident, so a client paging every saved thread could exhaust the heap.
-    // Sending a message or another interactive request loads it. OpenCode has no passive
-    // history reader, so its threads keep loading through the provider until it gains one.
+    // Sending a message or another interactive request loads it. Providers without a reliable
+    // passive history reader keep loading through the provider until they gain one.
     const loadsForHistory =
       !live &&
       record?.persistence?.sessionId &&
       isStoredAgentProviderAvailable(record, registeredProviders) &&
-      this.lacksPassiveHistoryReader(record.persistence.provider);
-    if (!live && record && !loadsForHistory) return fetchSaved(record);
+      !this.readsHistoryPassively(record.persistence.provider);
+    if (!live && record && !loadsForHistory) {
+      try {
+        return await fetchSaved(record);
+      } catch (error) {
+        // A thread created and never prompted, or whose transcript is gone, replays nothing.
+        // The saved reader refuses that so an account switch never treats a lost transcript
+        // as empty; a timeline read loads such a thread instead, as before 26.11.1600.
+        const unreadable =
+          error instanceof Error && error.message.startsWith(UNREADABLE_TRANSCRIPT_MESSAGE);
+        if (!unreadable || !isStoredAgentProviderAvailable(record, registeredProviders)) {
+          throw error;
+        }
+      }
+    }
 
     const load = () =>
       ensureAgentLoadedForTimeline(agentId, {
