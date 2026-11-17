@@ -2797,11 +2797,16 @@ export class AgentManager {
   async continueAfterHostedSessionLoss(
     agentId: string,
     loss: "turn" | "background" | "idle" = "turn",
+    reason?: string,
   ): Promise<void> {
     if (loss === "idle") {
-      await this.releaseAfterHostedSessionLoss(agentId);
+      await this.releaseAfterHostedSessionLoss(agentId, reason);
       return;
     }
+    this.logger.info(
+      { agentId, loss, reason },
+      "Hosted session ended with its host; the agent continues its work",
+    );
     if (this.agents.has(agentId)) {
       await this.drainSessionEvents(agentId).catch(() => {});
       // During a restart drain no session may open. The next worker loads the agent afresh and
@@ -2830,7 +2835,7 @@ export class AgentManager {
    * such as for an agent with a live goal, keeps the agent loaded on its lost session, which the
    * next prompt replaces. Neither path starts a provider; queued work still runs.
    */
-  private async releaseAfterHostedSessionLoss(agentId: string): Promise<void> {
+  private async releaseAfterHostedSessionLoss(agentId: string, reason?: string): Promise<void> {
     if (this.agents.has(agentId)) {
       await this.drainSessionEvents(agentId).catch(() => {});
       if (!this.isRestartDraining()) {
@@ -2842,7 +2847,7 @@ export class AgentManager {
           return false;
         });
         this.logger.info(
-          { agentId, released },
+          { agentId, released, loss: "idle", reason },
           "Idle agent's hosted session ended with its host; it reopens on demand",
         );
       }
