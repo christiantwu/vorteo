@@ -71,7 +71,8 @@ processes and subscriptions while retaining its Vorteo identity, persistence han
 workspace, labels, title, usage, attention, timestamps, and parent relationship. Opening or prompting
 the agent runs through `ensureAgentLoaded()`, which resumes the durable provider session under the
 same Vorteo agent ID. Provider history is not appended again when the canonical timeline is already
-primed.
+primed. Clearing a closed agent's attention when its thread is viewed updates its record
+and does not load it.
 
 Reload releases the old runtime before resuming its durable session: an idle provider process can
 still own an exclusive writer. A close failure retains that runtime for cleanup and blocks the

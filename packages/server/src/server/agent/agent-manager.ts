@@ -5249,7 +5249,29 @@ export class AgentManager {
   }
 
   async clearAgentAttention(agentId: string): Promise<void> {
-    const agent = this.requireAgent(agentId);
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      // Viewing a thread must not start its provider, so an unloaded agent's record is updated.
+      // Resume runs in the same lane, so its writes cannot interleave with this read and write,
+      // and a thread it loaded meanwhile takes the loaded path.
+      await this.runLifecycleMutation(agentId, async () => {
+        if (this.agents.has(agentId)) return this.clearAgentAttention(agentId);
+        const registry = this.requireRegistry();
+        const record = await registry.get(agentId);
+        if (!record) throw new Error(`Agent not found: ${agentId}`);
+        if (record.archivedAt || !record.requiresAttention) return;
+        const nextRecord: StoredAgentRecord = {
+          ...record,
+          updatedAt: this.nextStoredUpdatedAt(record),
+          requiresAttention: false,
+          attentionReason: null,
+          attentionTimestamp: null,
+        };
+        await registry.upsert(nextRecord);
+        this.dispatchStoredAgentState(nextRecord);
+      });
+      return;
+    }
     if (agent.attention.requiresAttention) {
       agent.attention = { requiresAttention: false };
       await this.persistSnapshot(agent);
@@ -5277,24 +5299,28 @@ export class AgentManager {
       return;
     }
 
-    const registry = this.requireRegistry();
-    const record = await registry.get(agentId);
-    const hasFinishedStatus = record?.lastStatus === "idle" || record?.lastStatus === "closed";
-    const canMarkUnread =
-      record && !record.internal && !record.archivedAt && !record.requiresAttention;
-    if (!canMarkUnread || !hasFinishedStatus) {
-      throw new Error(`Agent is no longer finished and read: ${agentId}`);
-    }
-    const updatedAt = this.nextStoredUpdatedAt(record);
-    const nextRecord: StoredAgentRecord = {
-      ...record,
-      updatedAt,
-      requiresAttention: true,
-      attentionReason: "finished",
-      attentionTimestamp: updatedAt,
-    };
-    await registry.upsert(nextRecord);
-    this.dispatchStoredAgentState(nextRecord);
+    // Same lane as resume, as for clearing attention.
+    return this.runLifecycleMutation(agentId, async () => {
+      if (this.agents.has(agentId)) return this.markAgentUnread(agentId);
+      const registry = this.requireRegistry();
+      const record = await registry.get(agentId);
+      const hasFinishedStatus = record?.lastStatus === "idle" || record?.lastStatus === "closed";
+      const canMarkUnread =
+        record && !record.internal && !record.archivedAt && !record.requiresAttention;
+      if (!canMarkUnread || !hasFinishedStatus) {
+        throw new Error(`Agent is no longer finished and read: ${agentId}`);
+      }
+      const updatedAt = this.nextStoredUpdatedAt(record);
+      const nextRecord: StoredAgentRecord = {
+        ...record,
+        updatedAt,
+        requiresAttention: true,
+        attentionReason: "finished",
+        attentionTimestamp: updatedAt,
+      };
+      await registry.upsert(nextRecord);
+      this.dispatchStoredAgentState(nextRecord);
+    });
   }
 
   async archiveSnapshot(agentId: string, archivedAt: string): Promise<StoredAgentRecord> {
