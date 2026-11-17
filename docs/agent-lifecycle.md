@@ -188,7 +188,8 @@ left in progress.
   progress is skipped while a subagent of it runs, or while its already loaded runtime
   reports live background work through the provider's `canStopRuntime`. Providers without
   that check are reviewed. Such a thread is also skipped while an active heartbeat or
-  schedule targets it, since that run wakes it. A thread with a blocked item is still
+  schedule targets it with a run due within a day, since that run wakes it. A schedule held
+  for quota does not count. A thread with a blocked item is still
   reviewed, because a blocker can clear long before the next scheduled run.
 - **Paused Factory projects.** Role threads of a Factory project the owner has paused or
   drained are not reviewed. Issue leads, workers and reviewers are subagents and are never
