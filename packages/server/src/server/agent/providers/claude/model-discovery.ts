@@ -168,7 +168,7 @@ export async function discoverClaudeModels(
     throw error;
   } finally {
     clearTimeout(timer);
-    await endDiscoveryProbe(claudeConfigDir(options.env), query, child, sdkAbort, endInput);
+    await endDiscoveryProbe(options.env, query, child, sdkAbort, endInput);
   }
 }
 
@@ -177,13 +177,13 @@ export async function discoverClaudeModels(
  * the account be renewing anyway, that finishes first, within the stop wait.
  */
 async function endDiscoveryProbe(
-  configDir: string,
+  env: NodeJS.ProcessEnv,
   query: { close(): void } | undefined,
   child: ChildProcess | undefined,
   sdkAbort: AbortController,
   endInput: () => void,
 ): Promise<void> {
-  if (child) await waitForClaudeRenewal(configDir);
+  if (child) await waitForClaudeRenewal(env);
   endInput();
   sdkAbort.abort();
   try {

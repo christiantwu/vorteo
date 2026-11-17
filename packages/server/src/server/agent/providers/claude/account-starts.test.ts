@@ -97,13 +97,16 @@ test.each(["private", "public", "symlink"] as const)(
 test("a stop waits for the account's sign-in renewal lock, but not for an abandoned one", async () => {
   const configDir = await mkdtemp(path.join(tmpdir(), "claude-renewal-"));
   const lock = path.join(configDir, CLAUDE_RENEWAL_LOCK_FILE);
+  const env = { CLAUDE_CONFIG_DIR: configDir, VORTEO_CLAUDE_SIGN_IN: "full" };
   try {
-    expect(await waitForClaudeRenewal(configDir, { maxMs: 0 })).toBe(true);
+    expect(await waitForClaudeRenewal(env, { maxMs: 0 })).toBe(true);
 
     await mkdir(lock);
     expect(await claudeRenewalInProgress(configDir)).toBe(true);
-    expect(await waitForClaudeRenewal(configDir, { maxMs: 30, pollMs: 5 })).toBe(false);
-    const stop = waitForClaudeRenewal(configDir, { maxMs: 5_000, pollMs: 5 });
+    expect(await waitForClaudeRenewal(env, { maxMs: 30, pollMs: 5 })).toBe(false);
+    // An account that cannot renew through Claude Code never waits.
+    expect(await waitForClaudeRenewal({ CLAUDE_CONFIG_DIR: configDir }, { maxMs: 30 })).toBe(true);
+    const stop = waitForClaudeRenewal(env, { maxMs: 5_000, pollMs: 5 });
     await rm(lock, { recursive: true });
     expect(await stop).toBe(true);
 
@@ -112,7 +115,7 @@ test("a stop waits for the account's sign-in renewal lock, but not for an abando
     const client = new ClaudeAgentClient({
       logger: createTestLogger(),
       resolveVersion: async () => "2.1.321",
-      runtimeSettings: { env: { CLAUDE_CONFIG_DIR: configDir } },
+      runtimeSettings: { env },
     });
     const session = await client.createSession({ provider: "claude", cwd: configDir });
     let closed = false;

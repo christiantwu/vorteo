@@ -3461,7 +3461,7 @@ class ClaudeAgentSession implements AgentSession {
    * end the process.
    */
   private async waitForRenewalBeforeStop(): Promise<void> {
-    const finished = await waitForClaudeRenewal(claudeConfigDir(this.harnessEnvironment));
+    const finished = await waitForClaudeRenewal(this.harnessEnvironment);
     if (!finished) {
       this.logger.warn(
         { agentId: this.agentId },
@@ -5143,10 +5143,13 @@ class ClaudeAgentSession implements AgentSession {
     this.failActiveTurns(staleResumeError);
     // Ending the input retires the process on purpose. Detach first so its exit
     // is not reported as a crash.
-    await this.waitForRenewalBeforeStop();
     const retiredChild = this.childProcess;
+    const retiredInput = this.input;
     this.childProcess = null;
-    this.input?.end();
+    // Wait detached, holding the handles: an exit during the wait is then not a crash, and
+    // nothing started meanwhile is ended in its place.
+    await this.waitForRenewalBeforeStop();
+    retiredInput?.end();
     await this.awaitWithTimeout(
       activeQuery.return?.(),
       "query pump return on missing resumed conversation",

@@ -1,5 +1,7 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import { claudeConfigDir } from "./project-dir.js";
+import { claudeSignInMode } from "./sign-in-mode.js";
 
 /**
  * Bounds overlap between query starts sharing a configuration-directory key in this process.
@@ -76,10 +78,14 @@ export const CLAUDE_RENEWAL_LOCK_FILE = ".oauth_refresh.lock";
 export const CLAUDE_RENEWAL_LOCK_FRESH_MS = 12_000;
 /**
  * Longest a stop waits for a renewal. Observed renewals hold the lock for 0.6 to 6 seconds. The
- * wait plus a graceful stop has to fit the daemon's five second agent close limit, and with the
- * session host's ten second settle wait and four second kill, its twenty second shutdown deadline.
+ * wait, one poll and the two second grace before a forced kill have to fit the daemon's five
+ * second agent close limit; the session host's ten second settle wait and four second kill then
+ * stay inside its twenty second shutdown deadline.
  */
-export const CLAUDE_RENEWAL_STOP_WAIT_MS = 3_000;
+export const CLAUDE_RENEWAL_STOP_WAIT_MS = 2_500;
+
+/** Allowance for one lock check to answer once the wait itself is over. */
+const CLAUDE_RENEWAL_STALL_GRACE_MS = 250;
 
 /**
  * True while some Claude Code process of this account holds a live renewal lock. The lock is
@@ -103,17 +109,36 @@ export async function claudeRenewalInProgress(
 /**
  * Waits, within maxMs, for the account's renewal to finish before a Claude Code process is
  * stopped. Resolves false when the wait ran out with the lock still held.
+ *
+ * Only a full sign-in account renews through Claude Code, the same scope as the discovery expiry
+ * guard. Every other session resolves without touching the file system, so its teardown starts
+ * in the same tick as before.
  */
 export async function waitForClaudeRenewal(
-  configDir: string,
+  env: Readonly<Record<string, string | undefined>>,
   options: { maxMs?: number; pollMs?: number } = {},
 ): Promise<boolean> {
-  const deadline = Date.now() + (options.maxMs ?? CLAUDE_RENEWAL_STOP_WAIT_MS);
-  while (await claudeRenewalInProgress(configDir)) {
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 100));
+  if (claudeSignInMode(env) !== "full") return true;
+  const configDir = claudeConfigDir(env);
+  const maxMs = options.maxMs ?? CLAUDE_RENEWAL_STOP_WAIT_MS;
+  const deadline = Date.now() + maxMs;
+  const poll = async (): Promise<boolean> => {
+    while (await claudeRenewalInProgress(configDir)) {
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 100));
+    }
+    return true;
+  };
+  // A file system that stops answering must not hold the stop past the bound either.
+  let stalled: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<boolean>((resolve) => {
+    stalled = setTimeout(() => resolve(false), maxMs + CLAUDE_RENEWAL_STALL_GRACE_MS);
+  });
+  try {
+    return await Promise.race([poll(), limit]);
+  } finally {
+    clearTimeout(stalled);
   }
-  return true;
 }
 
 /** Legacy opt-in filename. Debug output remains unavailable even when this file requests it. */
