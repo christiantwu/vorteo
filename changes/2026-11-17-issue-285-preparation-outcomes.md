@@ -1,8 +1,8 @@
 ### Fixes
 
 - Preserve concurrent lifecycle writes when recording broker consumer preparation failures. Retry validation once against a fresh reservation only while the request remains unchanged.
-- Return retained failed requests and report uncertain failure persistence with the request identity and status command. Exact plan approval and native no-replay boundaries remain unchanged.
+- Return retained failed requests and report uncertain failure persistence with the request identity and status command. Keep fresh preparation and reporting reads separate from evaluated coordinator state so stale owner decisions and dispatch refuse before effects.
 
 ## Maintenance review
 
-Reviewed broker maintenance and its customization entry for concurrent preparation, locked admission and scoped requester reporting. This covers preparation outcomes only; participant-scope replacement remains separate. The existing HTTP settings fixture now expects the unset time zone returned by its negotiated reader query. README overview and onboarding are unchanged. Source only; Builds must install the coordinator through the tracked workflow before running requests use this repair.
+Reviewed broker maintenance and its customization entry for concurrent preparation, locked admission and scoped requester reporting. Reviewed the evaluated-memory boundary after independent review reproduced unsafe stale dispatch. Deployment writes update only evaluated deployment state; a preparation-only refresh grants no decision or dispatch authority. Uncertain persistence can leave a preparing record, and removal during bookkeeping still reports uncertainty; neither case is repaired here. Error-output sanitization remains with #412. This covers preparation outcomes only; participant-scope replacement remains separate. The existing HTTP settings fixture now expects the unset time zone returned by its negotiated reader query. README overview and onboarding are unchanged. Source only; Builds must install the coordinator through the tracked workflow before running requests use this repair.

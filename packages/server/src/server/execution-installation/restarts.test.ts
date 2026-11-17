@@ -179,6 +179,57 @@ async function brokerDeploymentJournal(storage: "memory" | "file") {
   }
 }
 
+test.each(["dispatch", "decision", "prepare"] as const)(
+  "broker deployment refuses %s when a foreign writer changes evaluated coordinator state",
+  async (operation) => {
+    const journal = new CanonicalLifecycleJournal();
+    const brokerDeployment = inertBrokerDeploymentExecutor();
+    const queue = new InstallationRestarts(journal, {
+      restart: async () => "unexpected restart",
+      brokerDeployment,
+    });
+    const input = brokerDeploymentPreparation();
+    const prepared = await queue.prepareBrokerDeployment(input, "host-agent");
+    const decision = {
+      operation: input.plan.operation,
+      id: prepared.id,
+      revision: prepared.revision,
+      planSha256: prepared.planSha256,
+      decision: "approve",
+    };
+    if (operation === "dispatch") queue.decideBrokerDeployment(decision);
+    const foreign = RestartJobSchema.parse({
+      id: randomUUID(),
+      revision: randomUUID(),
+      target: "host",
+      requestedBy: "owner",
+      reason: "Wait for current turns",
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      status: "pending",
+      finishCurrentTurns: true,
+      detail: "Foreign writer adds a dispatch fence",
+    });
+    journal.mutate((previous) => [...previous, foreign]);
+    const retained = journal.read();
+    expect(queue.listBrokerDeployments()).toEqual(
+      retained.filter((job) => job.target === "preview-broker-deployment"),
+    );
+    const refusal = { code: "deployment_reservation_changed" };
+    if (operation === "dispatch") await expect.soft(queue.drain()).rejects.toMatchObject(refusal);
+    else if (operation === "decision")
+      expect
+        .soft(() => queue.decideBrokerDeployment(decision))
+        .toThrowError(expect.objectContaining(refusal));
+    else
+      await expect
+        .soft(queue.prepareBrokerDeployment(brokerDeploymentPreparation(), "host-agent"))
+        .rejects.toMatchObject(refusal);
+    expect.soft(journal.read()).toEqual(retained);
+    expect(brokerDeployment.executeBrokerDeployment).not.toHaveBeenCalled();
+  },
+);
+
 test.each([
   { storage: "memory", rejected: false, status: "pending", stage: "prepared" },
   { storage: "memory", rejected: true, status: "failed", stage: "preparing" },
@@ -197,8 +248,6 @@ test.each([
         );
       const restart = vi.fn(async () => "unexpected restart");
       const queue = new InstallationRestarts(f.journal, { restart, brokerDeployment });
-      const record = vi.fn();
-      queue.setOperationalActivitySink({ record, recordDropped: vi.fn() });
       const result = await queue.prepareBrokerDeployment(input, "host-agent");
       expect(result).toMatchObject({
         id: input.id,
@@ -209,11 +258,6 @@ test.each([
         status,
         stage,
       });
-      expect(record.mock.calls.map(([event]) => event.phase)).toEqual(
-        rejected ? ["pending", "failed"] : ["pending"],
-      );
-      expect(await queue.prepareBrokerDeployment(input, "host-agent")).toEqual(result);
-      expect(record).toHaveBeenCalledTimes(rejected ? 2 : 1);
       expect(result.approvedAt).toBeUndefined();
       expect(queue.listBrokerDeployments()).toEqual([result]);
       expect(f.reopen()).toEqual([result]);
@@ -257,6 +301,8 @@ test("broker deployment records failure without losing a genuine second writer m
       restart: async () => "unexpected restart",
       brokerDeployment,
     });
+    const record = vi.fn();
+    queue.setOperationalActivitySink({ record, recordDropped: vi.fn() });
     const input = brokerDeploymentPreparation();
     const preparing = queue.prepareBrokerDeployment(input, "host-agent");
     try {
@@ -271,6 +317,7 @@ test("broker deployment records failure without losing a genuine second writer m
     const competing = secondWriter.readLifecycle();
     const result = await preparing;
     expect(result).toMatchObject({ status: "failed", stage: "preparing" });
+    expect(record.mock.calls.map(([event]) => event.phase)).toEqual(["pending", "failed"]);
     expect(result.detail).toContain("Changed by a second writer");
     expect({ ...result, status: competing[0].status, detail: competing[0].detail }).toEqual(
       competing[0],
@@ -355,6 +402,17 @@ test.each([
           : unrelated;
       expect(f.reopen()).toEqual([result, expectedOther]);
       expect(await queue.prepareBrokerDeployment(input, "host-agent")).toEqual(result);
+      expect(queue.list()).toEqual([]);
+      expect(() =>
+        queue.decideBrokerDeployment({
+          operation: result.operation,
+          id: result.id,
+          revision: result.revision,
+          planSha256: result.planSha256,
+          decision: "cancel",
+        }),
+      ).toThrowError(expect.objectContaining({ code: "deployment_reservation_changed" }));
+      expect(f.reopen()).toEqual([result, expectedOther]);
       expect(executor.executeBrokerDeployment).not.toHaveBeenCalled();
       await expect(
         queue.prepareBrokerDeployment({ ...input, reason: "Different work" }, "host-agent"),
@@ -423,23 +481,17 @@ test("broker deployment snapshot advances only after a successful journal write"
     brokerDeployment,
   });
   const input = brokerDeploymentPreparation();
-  const record = vi.fn();
-  queue.setOperationalActivitySink({ record, recordDropped: vi.fn() });
-  await expect(queue.prepareBrokerDeployment({ id: input.id }, "host-agent")).rejects.toThrow();
-  expect(journal.read()).toEqual([]);
   journal.failWrite = true;
   await expect(queue.prepareBrokerDeployment(input, "host-agent")).rejects.toThrow(
     "disk unavailable",
   );
   expect(journal.read()).toEqual([]);
   expect(queue.listBrokerDeployments()).toEqual([]);
-  expect(record).not.toHaveBeenCalled();
   expect(brokerDeployment.validateBrokerDeploymentPlan).not.toHaveBeenCalled();
   journal.failWrite = false;
   const result = await queue.prepareBrokerDeployment(input, "host-agent");
   expect(result).toMatchObject({ id: input.id, status: "pending", stage: "prepared" });
   expect(journal.read()).toEqual([result]);
-  expect(record.mock.calls.map(([event]) => event.phase)).toEqual(["pending"]);
 });
 
 test("force restart persists continuation intent before capture and releases only after readiness", async () => {

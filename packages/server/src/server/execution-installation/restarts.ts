@@ -432,8 +432,8 @@ export class InstallationRestarts {
     if (!startup.fenced) this.activate();
   }
 
-  private loadState(snapshot = this.journal.read()): void {
-    this.snapshot = snapshot;
+  private loadState(): void {
+    this.snapshot = this.journal.read();
     this.jobs = this.snapshot.filter(
       (job): job is RestartJob => job.target === "host" || job.target === "container-daemon",
     );
@@ -706,6 +706,7 @@ export class InstallationRestarts {
     return structuredClone(next);
   }
 
+  // Reporting may read retained receipts without admitting their journal as evaluated state.
   listBrokerDeployments(): PreviewBrokerDeploymentJob[] {
     return structuredClone(
       this.journal
@@ -720,9 +721,20 @@ export class InstallationRestarts {
     return this.executor.brokerDeployment?.brokerDeploymentCompatible() ?? false;
   }
 
-  private deploymentWorkflow(): PreviewBrokerDeploymentWorkflow {
+  private deploymentWorkflow(preparation = false): PreviewBrokerDeploymentWorkflow {
     const executor = this.executor.brokerDeployment;
-    let reserved = this.journal.read();
+    let reserved = this.snapshot;
+    const deployments = (snapshot: readonly LifecycleJob[]) =>
+      snapshot.filter(
+        (job): job is PreviewBrokerDeploymentJob => job.target === "preview-broker-deployment",
+      );
+    const retainEvaluatedWrite = (previous: readonly LifecycleJob[], committed: LifecycleJob[]) => {
+      // A preparation-only refresh must not advance the coordinator's evaluated reservation.
+      // Foreign restart/recovery state still needs the normal coordinator reconciliation.
+      if (!isDeepStrictEqual(this.snapshot, previous)) return;
+      this.snapshot = committed;
+      this.brokerDeployments = deployments(committed);
+    };
     const current = () => {
       if (!isDeepStrictEqual(this.journal.read(), reserved))
         throw new BrokerDeploymentReservationChanged();
@@ -732,7 +744,9 @@ export class InstallationRestarts {
       requireActive: () => this.requireActive(),
       snapshot: current,
       requestExists: (id) => current().some((job) => job.id === id),
-      jobs: () => this.listBrokerDeployments(),
+      // Fresh receipts are only for preparation resubmission/reporting. Decisions and dispatch
+      // use the evaluated reservation, even if a status read has observed newer disk state.
+      jobs: () => (preparation ? this.listBrokerDeployments() : deployments(reserved)),
       replace: (job) => {
         if (!this.journal.mutate)
           throw new BrokerDeploymentRefused("Atomic deployment journal is unavailable");
@@ -752,8 +766,8 @@ export class InstallationRestarts {
           );
           return next;
         });
+        retainEvaluatedWrite(reserved, committed);
         reserved = committed;
-        this.loadState(committed);
         if (activity && this.operationalActivitySink)
           activity.flush(this.operationalActivitySink, this.now);
       },
@@ -769,9 +783,12 @@ export class InstallationRestarts {
         const activity = this.operationalActivitySink ? createOperationalActivityBatch() : null;
         if (!this.journal.mutate)
           throw new BrokerDeploymentRefused("Atomic deployment journal is unavailable");
+        let prior: readonly LifecycleJob[] = [];
+        let committed: LifecycleJob[] = [];
         this.journal.mutate((previous) => {
           this.requireActive();
-          return previous.map((retained) => {
+          prior = previous;
+          const next = previous.map((retained) => {
             if (
               retained.id !== job.id ||
               retained.target !== "preview-broker-deployment" ||
@@ -791,8 +808,10 @@ export class InstallationRestarts {
             activity?.change(retained, failed);
             return failed;
           });
+          committed = parseLifecycleJournal(next);
+          return next;
         });
-        this.loadState();
+        retainEvaluatedWrite(prior, committed);
         if (activity && this.operationalActivitySink)
           activity.flush(this.operationalActivitySink, this.now);
         const retained = this.listBrokerDeployments().find((item) => item.id === job.id);
@@ -809,7 +828,7 @@ export class InstallationRestarts {
     input: unknown,
     requestedBy: string,
   ): Promise<PreviewBrokerDeploymentJob> {
-    return this.deploymentWorkflow().prepare(input, requestedBy);
+    return this.deploymentWorkflow(true).prepare(input, requestedBy);
   }
 
   decideBrokerDeployment(input: unknown): PreviewBrokerDeploymentJob {
@@ -3190,7 +3209,7 @@ export class InstallationRestarts {
         : null;
     this.admitDelegatedBrokerQueue(grant, {
       store: evidence.deployment,
-      jobs: this.listBrokerDeployments(),
+      jobs: structuredClone(this.brokerDeployments),
       decide: (job, decision) =>
         this.decideBrokerDeployment({
           operation: job.operation,
