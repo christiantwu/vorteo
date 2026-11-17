@@ -41,9 +41,10 @@ test("profile switches retain legacy replies and optional preview results", () =
       ...response.payload,
       result: {
         agentId: "thread",
-        outcome: "would-switch",
-        provider: "secondary",
-        modeId: "bypassPermissions",
+        outcome: "refused",
+        error: "Wait for the current turn",
+        refusalCode: "busy",
+        preview: { sourceEligible: false, targetChecked: false },
       },
     },
   };

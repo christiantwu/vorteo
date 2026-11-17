@@ -43,12 +43,21 @@ test("switch CLI preserves batch refusals, source preconditions and dry-run inte
   let mutations = 0;
   const switchAgentProfile = vi.fn(async (id: string, target: { dryRun?: boolean }) => {
     if (!target.dryRun) mutations++;
-    return {
-      agentId: id,
-      outcome: id === "busy" ? ("refused" as const) : ("would-switch" as const),
-      modeId: "bypassPermissions",
-      ...(id === "busy" ? { error: "Current turn is running" } : {}),
-    };
+    // Dry runs come back refused; `preview` separates an eligible source from a real refusal.
+    return id === "busy"
+      ? {
+          agentId: id,
+          outcome: "refused" as const,
+          error: "Current turn is running",
+          refusalCode: "busy",
+          preview: { sourceEligible: false, targetChecked: false },
+        }
+      : {
+          agentId: id,
+          outcome: "refused" as const,
+          error: "Target account not checked",
+          preview: { sourceEligible: true, targetChecked: false },
+        };
   });
   const client = {
     fetchAgents: vi.fn(async () => ({
@@ -78,13 +87,18 @@ test("switch CLI preserves batch refusals, source preconditions and dry-run inte
     { from: "user" },
   );
   const result = await switchProfiles(undefined, command.opts(), async () => client);
-  expect(result.data).toEqual([
-    { agentId: "eligible", outcome: "would-switch", modeId: "bypassPermissions" },
+  expect(
+    result.data.map(({ agentId, refusalCode, preview }) => ({ agentId, refusalCode, preview })),
+  ).toEqual([
+    {
+      agentId: "eligible",
+      refusalCode: undefined,
+      preview: { sourceEligible: true, targetChecked: false },
+    },
     {
       agentId: "busy",
-      outcome: "refused",
-      modeId: "bypassPermissions",
-      error: "Current turn is running",
+      refusalCode: "busy",
+      preview: { sourceEligible: false, targetChecked: false },
     },
   ]);
   expect(switchAgentProfile).toHaveBeenCalledTimes(2);

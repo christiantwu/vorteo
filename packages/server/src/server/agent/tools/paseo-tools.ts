@@ -51,6 +51,7 @@ import {
   type ArchiveDependencies,
 } from "../../workspace-archive-service.js";
 import {
+  profileSwitchRefusalCode,
   selectProfileSwitchCandidates,
   switchAgentProfileCommand,
 } from "../profile-switch/command.js";
@@ -658,6 +659,23 @@ function resolveToolCallerContext(
   resolveCallerContext: PaseoToolHostDependencies["resolveCallerContext"],
 ) {
   return callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
+}
+
+/** A tool-side refusal; scope failures found by the tool itself report `out-of-scope`. */
+function toolSwitchRefusal(
+  agentId: string,
+  error: unknown,
+  dryRun: boolean,
+): AgentProfileSwitchResult {
+  const result: AgentProfileSwitchResult = {
+    agentId,
+    outcome: "refused",
+    error: error instanceof Error ? error.message : String(error),
+    refusalCode:
+      error instanceof PaseoToolInputError ? "out-of-scope" : profileSwitchRefusalCode(error),
+  };
+  if (dryRun) result.preview = { sourceEligible: false, targetChecked: false };
+  return result;
 }
 
 function createToolCatalog(
@@ -1783,7 +1801,7 @@ function createToolCatalog(
     {
       title: "Switch thread account",
       description:
-        "Switch one thread, or a snapshot of a workspace or project's threads on a source account. Requires a reason. Dry runs check eligibility without changing sessions or history. Each thread succeeds or refuses independently.",
+        "Switch one thread, or a snapshot of a workspace or project's threads on a source account. Requires a reason. Each thread switches, refuses with a refusalCode, or is skipped independently. A dry run checks only the source thread's eligibility and scope (preview.sourceEligible); it does not check the target account and changes no sessions, history or journals.",
       inputSchema: {
         agentId: z.string().min(1).optional(),
         workspaceId: z.string().min(1).optional(),
@@ -1904,11 +1922,7 @@ function createToolCatalog(
             ),
           );
         } catch (error) {
-          results.push({
-            agentId: id,
-            outcome: "refused",
-            error: error instanceof Error ? error.message : String(error),
-          });
+          results.push(toolSwitchRefusal(id, error, dryRun));
         }
       }
       return { content: [], structuredContent: ensureValidJson({ results }) };

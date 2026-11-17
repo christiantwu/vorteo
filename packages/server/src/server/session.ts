@@ -5673,6 +5673,7 @@ export class Session {
     this.sessionLogger.info(logFields, "session: agent.profile.switch.request");
     try {
       const actorId = this.actorPrincipalId();
+      const sourceScope = msg.sourceScope;
       const actorLabel =
         actorId === "owner"
           ? undefined
@@ -5693,24 +5694,27 @@ export class Session {
         {
           includeResult: true,
           actor: { kind: "principal", id: actorId, label: actorLabel },
-          validateScope: async (source) => {
-            const expected = msg.sourceScope;
-            if (!expected) return;
-            if (
-              source.provider !== expected.provider ||
-              source.cwd !== expected.cwd ||
-              source.workspaceId !== expected.workspaceId
-            ) {
-              throw new Error("Thread no longer matches the selected source account or workspace");
-            }
-            if (expected.projectId) {
-              const workspace = source.workspaceId
-                ? await this.workspaceRegistry.get(source.workspaceId)
-                : undefined;
-              if (workspace?.projectId !== expected.projectId)
-                throw new Error("Thread no longer belongs to the selected project");
-            }
-          },
+          // Only requests that carry a source precondition check scope.
+          validateScope: sourceScope
+            ? async (source) => {
+                if (
+                  source.provider !== sourceScope.provider ||
+                  source.cwd !== sourceScope.cwd ||
+                  source.workspaceId !== sourceScope.workspaceId
+                ) {
+                  throw new Error(
+                    "Thread no longer matches the selected source account or workspace",
+                  );
+                }
+                if (sourceScope.projectId) {
+                  const workspace = source.workspaceId
+                    ? await this.workspaceRegistry.get(source.workspaceId)
+                    : undefined;
+                  if (workspace?.projectId !== sourceScope.projectId)
+                    throw new Error("Thread no longer belongs to the selected project");
+                }
+              }
+            : undefined,
         },
       );
       this.emit({

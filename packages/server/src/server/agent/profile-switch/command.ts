@@ -34,7 +34,10 @@ export function selectProfileSwitchCandidates(input: ProfileSwitchCandidatesInpu
     !selection.sourceProvider.trim() ||
     Boolean(selection.workspaceId) === Boolean(selection.projectId)
   ) {
-    throw new ProfileSwitchError("Select exactly one workspace or project and a source account.");
+    throw new ProfileSwitchError(
+      "Select exactly one workspace or project and a source account.",
+      "invalid-selection",
+    );
   }
   const selectedWorkspaces = workspaces.filter((workspace) =>
     selection.workspaceId
@@ -114,11 +117,43 @@ export async function switchAgentProfileCommand(
     const result = await executeSwitchCommand(dependencies, target, options, (source) => {
       refusal = source;
     });
-    return options?.includeResult ? result : undefined;
+    if (options?.includeResult) return result;
+    // Callers without structured results must not mistake an eligible dry run for a switch.
+    if (target.dryRun) throw new ProfileSwitchError(result.error ?? DRY_RUN_TARGET_UNCHECKED);
+    return undefined;
   } catch (error) {
     if (!options?.includeResult) throw error;
-    return { ...refusal, error: error instanceof Error ? error.message : String(error) };
+    const failure = {
+      error: error instanceof Error ? error.message : String(error),
+      refusalCode: profileSwitchRefusalCode(error),
+    };
+    // A dry run never reaches the target, so it reports no settings that could pass for the target's.
+    return target.dryRun
+      ? {
+          agentId: target.agentId,
+          outcome: "refused",
+          ...failure,
+          preview: { sourceEligible: false, targetChecked: false },
+        }
+      : { ...refusal, ...failure };
   }
+}
+
+const DRY_RUN_TARGET_UNCHECKED =
+  "The thread is eligible to switch. The target account was not checked; a dry run never contacts providers.";
+
+/** Machine-readable refusal reason; errors outside switch preparation report `error`. */
+export function profileSwitchRefusalCode(error: unknown): string {
+  return error instanceof ProfileSwitchError ? error.code : "error";
+}
+
+/**
+ * Coordinator requests, from the agent tool or CLI, always carry an explanation for the journal.
+ * Only they preserve settings or refuse; app switches keep their existing behaviour, including
+ * switches between provider families.
+ */
+function isCoordinatorRequest(target: ProfileSwitchTarget): boolean {
+  return target.explanation !== undefined;
 }
 
 async function executeSwitchCommand(
@@ -128,12 +163,16 @@ async function executeSwitchCommand(
   captureSource: (result: AgentProfileSwitchResult) => void,
 ): Promise<AgentProfileSwitchResult> {
   const { agentManager } = dependencies;
-  const { input, record, settings } = await prepareCommand(
-    dependencies,
-    target,
-    options ?? {},
-    captureSource,
-  );
+  const prepared = await prepareCommand(dependencies, target, options ?? {}, captureSource);
+  if (prepared.dryRun) {
+    return {
+      agentId: target.agentId,
+      outcome: "refused",
+      error: DRY_RUN_TARGET_UNCHECKED,
+      preview: { sourceEligible: true, targetChecked: false },
+    };
+  }
+  const { input, record, settings } = prepared;
   const switched = await agentManager.switchAgentProfile(target.agentId, input);
   const result = switchResult(
     target.agentId,
@@ -180,6 +219,43 @@ function switchResult(
   };
 }
 
+/** Snapshots the source before any asynchronous work; coordinator and dry-run requests recheck it. */
+function captureSwitchSource(
+  agentManager: ProfileSwitchDependencies["agentManager"],
+  target: ProfileSwitchTarget,
+  record: StoredAgentRecord,
+  coordinator: boolean,
+) {
+  const live = agentManager.getAgent(target.agentId);
+  const expectedSource =
+    live && (coordinator || target.dryRun)
+      ? structuredClone({
+          config: live.config,
+          runtimeInfo: live.runtimeInfo,
+          workspaceId: live.workspaceId,
+          currentModeId: live.currentModeId,
+          features: live.features,
+        })
+      : undefined;
+  const sourceConfig = expectedSource?.config ??
+    live?.config ?? {
+      ...buildConfigOverrides(record),
+      provider: record.provider,
+      cwd: record.cwd,
+      title: record.title ?? undefined,
+    };
+  const sourceResult = structuredClone(
+    switchResult(
+      target.agentId,
+      "refused",
+      sourceConfig,
+      live ? live.lifecycle : "closed",
+      live?.runtimeInfo,
+    ),
+  );
+  return { live, expectedSource, sourceConfig, sourceResult };
+}
+
 async function prepareCommand(
   dependencies: ProfileSwitchDependencies,
   target: ProfileSwitchTarget,
@@ -189,52 +265,42 @@ async function prepareCommand(
   const { agentManager, agentStorage, providerSnapshotManager } = dependencies;
   await agentManager.waitForAgentClose(target.agentId);
   const record = await agentStorage.get(target.agentId);
-  if (!record) throw new Error(`Agent not found: ${target.agentId}`);
-  const live = agentManager.getAgent(target.agentId);
-  const expectedSource = live
-    ? structuredClone({
-        config: live.config,
-        runtimeInfo: live.runtimeInfo,
-        workspaceId: live.workspaceId,
-        currentModeId: live.currentModeId,
-        features: live.features,
-      })
-    : undefined;
-  const sourceConfig = expectedSource?.config ?? {
-    ...buildConfigOverrides(record),
-    provider: record.provider,
-    cwd: record.cwd,
-    title: record.title ?? undefined,
-  };
-  const sourceResult = structuredClone(
-    switchResult(
-      target.agentId,
-      "refused",
-      sourceConfig,
-      live ? live.lifecycle : "closed",
-      expectedSource?.runtimeInfo,
-    ),
+  if (!record) throw new ProfileSwitchError(`Agent not found: ${target.agentId}`, "not-found");
+  const coordinator = isCoordinatorRequest(target);
+  const { live, expectedSource, sourceConfig, sourceResult } = captureSwitchSource(
+    agentManager,
+    target,
+    record,
+    coordinator,
   );
   captureSource(sourceResult);
   if (record.archivedAt)
-    throw new ProfileSwitchError("Restore this thread before switching accounts.");
+    throw new ProfileSwitchError("Restore this thread before switching accounts.", "archived");
   if (record.internal || record.config?.controllerExecutionId)
-    throw new ProfileSwitchError("This thread is managed by Vorteo and cannot switch accounts.");
-  const preservedSettings = effectiveSwitchSettings(sourceConfig, expectedSource, record);
-  captureSource({
-    ...sourceResult,
-    ...switchResult(
-      target.agentId,
-      "refused",
-      { ...sourceConfig, ...preservedSettings },
-      sourceResult.status ?? "closed",
-    ),
-  });
+    throw new ProfileSwitchError(
+      "This thread is managed by Vorteo and cannot switch accounts.",
+      "managed",
+    );
   if (target.dryRun) {
-    return agentManager.previewAgentProfile(target.agentId, {
+    await agentManager.previewAgentProfile(target.agentId, {
       expectedSource,
       validateScope: options.validateScope,
       storedSource: live ? undefined : { record },
+    });
+    return { dryRun: true as const };
+  }
+  const preservedSettings = coordinator
+    ? effectiveSwitchSettings(sourceConfig, expectedSource, record)
+    : undefined;
+  if (preservedSettings) {
+    captureSource({
+      ...sourceResult,
+      ...switchResult(
+        target.agentId,
+        "refused",
+        { ...sourceConfig, ...preservedSettings },
+        sourceResult.status ?? "closed",
+      ),
     });
   }
   const history = (async function* () {
@@ -255,8 +321,9 @@ async function prepareCommand(
     title: sourceConfig.title,
     mcpServers: sourceConfig.mcpServers,
     systemPrompt: options.standingInstructions,
-    profileId: target.profileId,
-    model: target.model ?? undefined,
+    ...(target.profileId ? { profileId: target.profileId } : {}),
+    ...(target.model ? { model: target.model } : {}),
+    ...(target.thinkingOptionId ? { thinkingOptionId: target.thinkingOptionId } : {}),
   };
   const input = {
     validateScope: options.validateScope,
@@ -271,13 +338,13 @@ async function prepareCommand(
         from: describeAccount(
           settings,
           record.provider,
-          expectedSource?.runtimeInfo?.model ?? sourceConfig.model,
+          live?.runtimeInfo?.model ?? sourceConfig.model,
         ),
         to: describeAccount(settings, target.provider, target.model),
         context,
       }),
   };
-  return { input, record, settings };
+  return { dryRun: false as const, input, record, settings };
 }
 
 function describeActor(
@@ -307,6 +374,7 @@ function effectiveSwitchSettings(
     if (typeof value !== "boolean" && typeof value !== "string") {
       throw new ProfileSwitchError(
         `Cannot preserve feature '${id}': its effective value is unknown.`,
+        "unknown-setting",
       );
     }
   }

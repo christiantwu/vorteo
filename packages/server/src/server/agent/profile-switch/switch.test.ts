@@ -300,10 +300,15 @@ test("switch preparation preserves effective settings over target profile defaul
         async *readSessionHistory() {},
       },
     };
-    const target = { agentId: agent.id, provider: "codex-second", profileId: "target" };
-    await expect(switchAgentProfileCommand(dependencies, target)).rejects.toThrow(
-      "permission mode",
-    );
+    const target = {
+      agentId: agent.id,
+      provider: "codex-second",
+      profileId: "target",
+      explanation: "Continue on the second account",
+    };
+    await expect(switchAgentProfileCommand(dependencies, target)).rejects.toMatchObject({
+      code: "incompatible-target",
+    });
     expect(second.created).toEqual([]);
     expect((await storage.get(agent.id))?.profileSwitches ?? []).toEqual([]);
     second.catalog.modes = [{ id: "bypassPermissions", label: "Bypass" }];
@@ -313,15 +318,38 @@ test("switch preparation preserves effective settings over target profile defaul
         { ...target, dryRun: true },
         { includeResult: true },
       ),
-    ).toMatchObject({
+    ).toEqual({
+      agentId: agent.id,
       outcome: "refused",
-      modeId: preserved.modeId,
-      thinkingOptionId: preserved.thinkingOptionId,
-      features: preserved.featureValues,
+      error: expect.any(String),
+      preview: { sourceEligible: true, targetChecked: false },
     });
     expect(second.created).toEqual([]);
     await switchAgentProfileCommand(dependencies, target);
     expect(second.created[0]).toMatchObject(preserved);
+    // Coordinator requests never infer permission equivalence across provider families.
+    await expect(
+      switchAgentProfileCommand(dependencies, {
+        ...target,
+        provider: "claude",
+        profileId: undefined,
+      }),
+    ).rejects.toMatchObject({ code: "incompatible-target" });
+    expect(manager.getAgent(agent.id)?.provider).toBe("codex-second");
+    // App switches carry no explanation and keep switching across provider families.
+    await switchAgentProfileCommand(
+      {
+        ...dependencies,
+        providerSnapshotManager: {
+          async resolveCreateConfig() {
+            return { modeId: undefined, featureValues: undefined };
+          },
+          async *readSessionHistory() {},
+        },
+      },
+      { agentId: agent.id, provider: "claude" },
+    );
+    expect(manager.getAgent(agent.id)?.provider).toBe("claude");
     await manager.closeAgent(agent.id);
   } finally {
     cleanup();
@@ -414,7 +442,31 @@ test("an eligible switch preview leaves sessions, history, journal and timeline 
       options,
     );
     expect(runtimeStarts).toBe(0);
-    expect(preview).toMatchObject({ agentId: agent.id, outcome: "refused" });
+    // A dry run reports source eligibility only, with no settings that could pass for the target's.
+    expect(preview).toEqual({
+      agentId: agent.id,
+      outcome: "refused",
+      error: expect.any(String),
+      preview: { sourceEligible: true, targetChecked: false },
+    });
+    expect(
+      await switchAgentProfileCommand(
+        dependencies,
+        { ...target, dryRun: true },
+        {
+          ...options,
+          validateScope: async () => {
+            throw new Error("Outside the selection");
+          },
+        },
+      ),
+    ).toEqual({
+      agentId: agent.id,
+      outcome: "refused",
+      error: "Outside the selection",
+      refusalCode: "out-of-scope",
+      preview: { sourceEligible: false, targetChecked: false },
+    });
     expect(second.created).toEqual([]);
     const unloadedManager = new AgentManager({
       clients: { codex, "codex-second": second },
@@ -438,7 +490,7 @@ test("an eligible switch preview leaves sessions, history, journal and timeline 
       { ...target, dryRun: true },
       options,
     );
-    expect(unloadedPreview).toMatchObject({ outcome: "refused" });
+    expect(unloadedPreview).toMatchObject({ preview: { sourceEligible: true } });
     expect(runtimeStarts).toBe(0);
     expect(codex.resumed).toEqual([]);
     const restrictedPreview = await switchAgentProfileCommand(
@@ -460,8 +512,7 @@ test("an eligible switch preview leaves sessions, history, journal and timeline 
     expect(codex.created).toHaveLength(1);
     expect(second.created).toEqual([]);
     expect(restrictedPreview).toMatchObject({
-      outcome: "refused",
-      error: expect.stringContaining("passive"),
+      preview: { sourceEligible: true, targetChecked: false },
     });
     await manager.flush();
     expect(codex.created).toHaveLength(1);
@@ -542,7 +593,7 @@ test("a restriction queued during history writing applies to the replacement ses
           async *readSessionHistory() {},
         },
       },
-      { agentId: agent.id, provider: "codex-second" },
+      { agentId: agent.id, provider: "codex-second", explanation: "Continue elsewhere" },
     );
     await writing.promise;
     const restriction = manager.setAgentMode(agent.id, "default");
@@ -586,17 +637,17 @@ test.each([false, true])(
             async *readSessionHistory() {},
           },
         },
-        { agentId: agent.id, provider: "codex" },
+        { agentId: agent.id, provider: "codex", explanation: "Continue elsewhere" },
         { includeResult: structured },
       );
       if (structured) {
         await expect(attempt).resolves.toMatchObject({
           outcome: "refused",
           modeId: "default",
-          error: expect.stringContaining("settings changed"),
+          refusalCode: "source-changed",
         });
       } else {
-        await expect(attempt).rejects.toThrow("settings changed");
+        await expect(attempt).rejects.toMatchObject({ code: "source-changed" });
       }
       expect(codex.created).toHaveLength(1);
       expect(manager.getAgent(agent.id)?.config.modeId).toBe("bypassPermissions");
@@ -824,7 +875,7 @@ test("an unloaded thread switches without the previous provider and retains its 
 test.each([false, true])(
   "recovery reads a disabled Claude account transcript (removed: %s)",
   async (removed) => {
-    const { workdir, storage, claude, cleanup, manager } = await fixture();
+    const { workdir, storage, codex, cleanup, manager } = await fixture();
     const configDir = join(workdir, "old-claude-account");
     const transcriptDir = claudeProjectDirSync(workdir, { configDir });
     mkdirSync(transcriptDir, { recursive: true });
@@ -863,14 +914,10 @@ test.each([false, true])(
           env: { CLAUDE_CONFIG_DIR: configDir },
         },
       },
-      extraClients: { claude },
+      extraClients: { codex },
     });
     const reader = new AgentManager({
-      clients: { claude },
-      providerDefinitions: {
-        claude: { enabled: true },
-        [provider]: { enabled: false, derivedFromProviderId: "claude" },
-      },
+      clients: { codex },
       registry: storage,
       logger: createTestLogger(),
     });
@@ -947,8 +994,8 @@ test.each([false, true])(
       ]);
       expect(reader.getAgent(id)).toBeNull();
       expect(await storage.get(id)).toEqual(before);
-      expect(claude.created).toHaveLength(0);
-      expect(claude.resumed).toHaveLength(0);
+      expect(codex.created).toHaveLength(0);
+      expect(codex.resumed).toHaveLength(0);
       expect(queueChanges).toBe(0);
       expect(await queueStore.read(id)).toEqual(queueBefore);
       expect(
@@ -994,7 +1041,7 @@ test.each([false, true])(
         })),
       );
       expect(reconciliation.changed).toBe(true);
-      claude.createError = new Error("Replacement failed");
+      codex.createError = new Error("Replacement failed");
       await expect(
         switchAgentProfileCommand(
           {
@@ -1003,11 +1050,11 @@ test.each([false, true])(
             providerSnapshotManager: snapshots,
             logger: createTestLogger(),
           },
-          { agentId: id, provider: "claude" },
+          { agentId: id, provider: "codex" },
         ),
       ).rejects.toThrow("Replacement failed");
       expect(await storage.get(id)).toEqual(before);
-      claude.createError = null;
+      codex.createError = null;
       await switchAgentProfileCommand(
         {
           agentManager: reader,
@@ -1015,13 +1062,13 @@ test.each([false, true])(
           providerSnapshotManager: snapshots,
           logger: createTestLogger(),
         },
-        { agentId: id, provider: "claude" },
+        { agentId: id, provider: "codex" },
         { standingInstructions: "You are the Foreman." },
       );
       // Standing instructions, such as a Factory charter, lead the new session's prompt.
-      expect(claude.created.at(-1)?.systemPrompt).toMatch(/^You are the Foreman\.\n\n/);
-      expect(claude.created.at(-1)?.systemPrompt).toContain("Preserve my approved plan");
-      expect(claude.created.at(-1)?.systemPrompt).toContain("The next step is validation");
+      expect(codex.created.at(-1)?.systemPrompt).toMatch(/^You are the Foreman\.\n\n/);
+      expect(codex.created.at(-1)?.systemPrompt).toContain("Preserve my approved plan");
+      expect(codex.created.at(-1)?.systemPrompt).toContain("The next step is validation");
       expect(reader.getAgent(id)).toMatchObject({
         workspaceId: "retained-workspace",
         tasks: before?.tasks,
@@ -1029,7 +1076,7 @@ test.each([false, true])(
       });
       expect(await storage.get(id)).toMatchObject({
         title: "Original task",
-        provider: "claude",
+        provider: "codex",
         tasks: before?.tasks,
         journal: before?.journal,
       });

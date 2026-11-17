@@ -1,7 +1,7 @@
 ### Fixes
 
-- Preserve effective permission mode, thinking and feature values when switching accounts. Refuse incompatible targets before replacing the source session.
-- Gate switch previews and source preconditions so older daemons cannot turn them into real switches.
+- Preserve effective permission mode, thinking and feature values when a coordinator switches a thread's account. Refuse incompatible targets, including other provider families, before replacing the source session. App switches are unchanged.
+- Gate dry runs and source preconditions so older daemons cannot turn them into real switches.
 
 ## Maintenance review
 

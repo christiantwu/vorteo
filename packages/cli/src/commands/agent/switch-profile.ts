@@ -25,7 +25,10 @@ export function addSwitchProfileOptions(command: Command): Command {
     .option("--project <id>", "Select a project's threads")
     .option("--source <id>", "Source account/provider ID for batch selection")
     .requiredOption("--reason <text>", "Explain the switch for the thread journal")
-    .option("--dry-run", "Check eligibility without changing sessions or history");
+    .option(
+      "--dry-run",
+      "Check only each source thread's eligibility and scope; the target account is not checked and nothing changes",
+    );
 }
 
 const schema: OutputSchema<AgentProfileSwitchResult> = {
@@ -33,6 +36,11 @@ const schema: OutputSchema<AgentProfileSwitchResult> = {
   columns: [
     { header: "THREAD", field: "agentId" },
     { header: "OUTCOME", field: "outcome" },
+    {
+      header: "SOURCE ELIGIBLE",
+      field: (result) => describeEligibility(result.preview),
+    },
+    { header: "CODE", field: "refusalCode" },
     { header: "PROVIDER", field: "provider" },
     { header: "MODEL", field: "model" },
     { header: "MODE", field: "modeId" },
@@ -46,6 +54,11 @@ const schema: OutputSchema<AgentProfileSwitchResult> = {
     { header: "AUDIT ERROR", field: "auditError" },
   ],
 };
+
+function describeEligibility(preview: AgentProfileSwitchResult["preview"]): string {
+  if (!preview) return "";
+  return preview.sourceEligible ? "yes" : "no";
+}
 
 interface SwitchClient {
   fetchAgents(options?: Parameters<DaemonClient["fetchAgents"]>[0]): Promise<{
@@ -104,6 +117,8 @@ export async function switchProfiles(
           agentId: agent.id,
           outcome: "refused",
           error: error instanceof Error ? error.message : String(error),
+          refusalCode: "error",
+          ...(options.dryRun ? { preview: { sourceEligible: false, targetChecked: false } } : {}),
         });
       }
     }

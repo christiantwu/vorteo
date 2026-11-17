@@ -8629,7 +8629,6 @@ test.each(["legacy", "preview", "refused", "legacy-refused"] as const)(
   "profile switch replies retain optional results (%s)",
   async (kind) => {
     const modern = kind === "preview" || kind === "refused";
-    const refused = kind === "refused" || kind === "legacy-refused";
     const mock = createMockTransport();
     const client = new DaemonClient({
       url: "ws://test",
@@ -8653,25 +8652,34 @@ test.each(["legacy", "preview", "refused", "legacy-refused"] as const)(
       ...target,
       requestId: expect.any(String),
     });
-    const result =
-      modern || refused
-        ? {
-            agentId: "thread",
-            outcome: refused ? "refused" : "would-switch",
-            provider: "secondary",
-            modeId: "bypassPermissions",
-            status: "idle",
-            ...(refused ? { error: "Target cannot preserve thinking settings" } : {}),
-          }
-        : undefined;
+    // A dry run comes back refused: it checks the source thread only, never the target account.
+    const results = {
+      legacy: undefined,
+      preview: {
+        agentId: "thread",
+        outcome: "refused",
+        error: "The target account was not checked",
+        preview: { sourceEligible: true, targetChecked: false },
+      },
+      refused: {
+        agentId: "thread",
+        outcome: "refused",
+        provider: "secondary",
+        modeId: "bypassPermissions",
+        status: "idle",
+        error: "Target cannot preserve thinking settings",
+        refusalCode: "incompatible-target",
+      },
+    };
+    const result = kind === "legacy-refused" ? results.refused : results[kind];
     mock.triggerMessage(
       wrapSessionMessage({
         type: "agent.profile.switch.response",
         payload: {
           requestId: sent.message.requestId,
           agentId: "thread",
-          accepted: !refused,
-          error: refused ? "Target cannot preserve thinking settings" : null,
+          accepted: result === undefined,
+          error: result?.error ?? null,
           ...(result ? { result } : {}),
         },
       }),

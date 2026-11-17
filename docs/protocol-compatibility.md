@@ -53,9 +53,23 @@ must match the source checked under the switch lifecycle lock; omitted `workspac
 an unassigned thread, not any workspace. A supplied project must still contain that workspace.
 The response's optional `result` reports each outcome and any audit-write failure. Enhancement
 callers retain structured refusals; legacy callers still reject `accepted: false` responses.
-Dry runs check source metadata and scope without provider callbacks or saved-history loading.
-They currently refuse target compatibility because no passive validation contract is available;
-the optional result shape retains `would-switch` for compatible future implementations.
+A refusal carries an optional `refusalCode`, such as `busy`, `managed`, `out-of-scope`,
+`source-changed` or `incompatible-target`. Codes are plain strings, so clients must tolerate
+codes added later.
+
+Dry runs check source eligibility and scope only, without provider callbacks or saved-history
+loading, and give no target compatibility preview. Every dry-run result has outcome `refused`
+and an optional `preview` object. `preview.sourceEligible: true` with no `refusalCode` means the
+source thread is eligible and in scope while the target account is unchecked
+(`preview.targetChecked: false`); `false` comes with a `refusalCode`. Dry-run results omit
+provider and settings fields, which describe the target only after a switch. Hosts do not
+produce `would-switch` yet; the value stays in the result schema so a later passive target
+check needs no new enum value.
+
+Only requests carrying `explanation`, which the agent tool and CLI always send, preserve the
+source's permission mode, thinking option and features, and refuse targets that cannot offer
+them, including any target in another provider family. App switches send no explanation and
+keep their earlier behaviour, including switches between provider families.
 
 ## Client capability ownership
 

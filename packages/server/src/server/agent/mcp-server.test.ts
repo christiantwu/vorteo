@@ -222,8 +222,17 @@ it("switch tool enforces policy, caller scope and exact batch membership", async
     });
     expect(result.structuredContent).toMatchObject({
       results: [
-        { agentId: target.id, outcome: "refused", error: expect.stringContaining("passively") },
-        { agentId: outside.id, outcome: "refused" },
+        {
+          agentId: target.id,
+          outcome: "refused",
+          preview: { sourceEligible: true, targetChecked: false },
+        },
+        {
+          agentId: outside.id,
+          outcome: "refused",
+          refusalCode: "out-of-scope",
+          preview: { sourceEligible: false, targetChecked: false },
+        },
       ],
     });
     expect(manager.getAgent(target.id)?.provider).toBe("codex");
@@ -241,9 +250,7 @@ it("switch tool enforces policy, caller scope and exact batch membership", async
       dryRun: false,
     });
     expect(moved.structuredContent).toMatchObject({
-      results: [
-        { agentId: target.id, outcome: "refused", error: expect.stringContaining("changed") },
-      ],
+      results: [{ agentId: target.id, outcome: "refused", refusalCode: "source-changed" }],
     });
     expect(manager.getAgent(target.id)?.provider).toBe("codex");
     for (const managed of [
@@ -259,7 +266,7 @@ it("switch tool enforces policy, caller scope and exact batch membership", async
         dryRun: false,
       });
       expect(refused.structuredContent).toMatchObject({
-        results: [{ outcome: "refused", error: expect.stringContaining("managed by Vorteo") }],
+        results: [{ outcome: "refused", refusalCode: "managed" }],
       });
     }
 
@@ -292,13 +299,9 @@ it.each([false, true])(
       logger,
     });
     try {
-      const agent = await manager.createAgent(
-        { provider: "codex", cwd: home, modeId: "default" },
-        undefined,
-        {
-          workspaceId: "fixture-workspace",
-        },
-      );
+      const agent = await manager.createAgent({ provider: "codex", cwd: home }, undefined, {
+        workspaceId: "fixture-workspace",
+      });
       const messagesService = createTestAgentMessages({
         agentManager: manager,
         agentStorage: storage,
