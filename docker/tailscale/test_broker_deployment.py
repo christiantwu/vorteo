@@ -237,6 +237,13 @@ class NativeDeploymentTests(unittest.TestCase):
         for argv0 in ('/usr/bin/python3', '/opt/fixture/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python',
                       self.FRAMEWORK + '/Resources/Python.app/Contents/MacOS/Python3'):
             self.assertFalse(route_argv([argv0, '-I', '/root/https_broker.py'], binding))
+        image = self.FRAMEWORK + '/Resources/Python.app/Contents/MacOS/Python'
+        self.assertTrue(route_argv([image, '-I', '/root/https_broker.py'], binding))
+        # Only argv[0] may differ: extra, missing or reordered arguments are refused.
+        for argv in ([image, '-I', '/root/https_broker.py', '--extra'], [image, '/root/https_broker.py', '-I'],
+                     [image, '-I'], [image, '-c', 'import os', '/root/https_broker.py'],
+                     [launcher, '/root/https_broker.py', '-I'], [launcher, '-I', '/root/https_broker.py', '-x']):
+            self.assertFalse(route_argv(argv, binding), argv)
         # A non-framework interpreter has no re-exec image to admit.
         self.assertFalse(route_argv(['/x', '-I', '/r/https_broker.py'], {'interpreter': '/protected/python', 'argv': ['/protected/python', '-I', '/r/https_broker.py']}))
         worker, observer, states, effects = self.native(running=True, interpreter=launcher, image='/usr/bin/python3')
