@@ -9785,6 +9785,23 @@ export class Session {
     });
   }
 
+  /**
+   * True for providers in the OpenCode family. Their saved transcripts can only be read by
+   * resuming the native session, which the snapshot manager refuses for passive reads.
+   */
+  private lacksPassiveHistoryReader(provider: string): boolean {
+    const { providerDefinitions } = this.providerSnapshotManager.getAgentManagerProviderState();
+    const seen = new Set<string>();
+    let current = provider;
+    while (!seen.has(current)) {
+      seen.add(current);
+      const base = providerDefinitions[current]?.derivedFromProviderId;
+      if (!base) break;
+      current = base;
+    }
+    return current === "opencode";
+  }
+
   private async fetchControlTimeline(
     agentId: string,
     options: AgentTimelineFetchOptions,
@@ -9834,8 +9851,14 @@ export class Session {
     };
     // Reading history never resumes a thread. A resumed thread stays registered with its
     // whole history resident, so a client paging every saved thread could exhaust the heap.
-    // Sending a message or another interactive request loads it.
-    if (!live && record) return fetchSaved(record);
+    // Sending a message or another interactive request loads it. OpenCode has no passive
+    // history reader, so its threads keep loading through the provider until it gains one.
+    const loadsForHistory =
+      !live &&
+      record?.persistence?.sessionId &&
+      isStoredAgentProviderAvailable(record, registeredProviders) &&
+      this.lacksPassiveHistoryReader(record.persistence.provider);
+    if (!live && record && !loadsForHistory) return fetchSaved(record);
 
     const load = () =>
       ensureAgentLoadedForTimeline(agentId, {
@@ -9843,7 +9866,7 @@ export class Session {
         agentStorage: this.agentStorage,
         logger: this.sessionLogger,
       });
-    const needsHistory = live ? this.agentManager.needsTimelineHydration(agentId) : false;
+    const needsHistory = live ? this.agentManager.needsTimelineHydration(agentId) : Boolean(record);
     const agent = needsHistory
       ? await loadTimelineHistory(this.agentManager, agentId, "native", load, retryHistory)
       : await load();
