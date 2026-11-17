@@ -40,6 +40,37 @@ The app checks for the capability and either runs the feature or tells the user 
 
 Existing functionality keeps working across versions. Never gate an established request on a new enhancement: negotiate the optional enhancement at the client boundary and preserve the existing request for older hosts. Whole-turn pagination can require a capability; reading conversation history cannot.
 
+### Account switch previews and preconditions
+
+The optional `agentProfileSwitchPreview` capability gates `dryRun`, `explanation` and
+`sourceScope` on `agent.profile.switch.request`. The client refuses requests containing any
+of these fields before transmission when the host lacks the capability. Older schemas strip
+unknown fields, so sending a preview or source precondition to an older host could execute an
+unconditional switch.
+
+`sourceScope` is a precondition, never caller authority. Its provider, directory and workspace
+must match the source checked under the switch lifecycle lock; omitted `workspaceId` means
+an unassigned thread, not any workspace. A supplied project must still contain that workspace.
+The response's optional `result` reports each outcome and any audit-write failure. Enhancement
+callers retain structured refusals; legacy callers still reject `accepted: false` responses.
+A refusal carries an optional `refusalCode`, such as `busy`, `managed`, `out-of-scope`,
+`source-changed` or `incompatible-target`. Codes are plain strings, so clients must tolerate
+codes added later.
+
+Dry runs check source eligibility and scope only, without provider callbacks or saved-history
+loading, and give no target compatibility preview. Every dry-run result has outcome `refused`
+and an optional `preview` object. `preview.sourceEligible: true` with no `refusalCode` means the
+source thread is eligible and in scope while the target account is unchecked
+(`preview.targetChecked: false`); `false` comes with a `refusalCode`. Dry-run results omit
+provider and settings fields, which describe the target only after a switch. Hosts do not
+produce `would-switch` yet; the value stays in the result schema so a later passive target
+check needs no new enum value.
+
+Only requests carrying `explanation`, which the agent tool and CLI always send, preserve the
+source's permission mode, thinking option and features, and refuse targets that cannot offer
+them, including any target in another provider family. App switches send no explanation and
+keep their earlier behaviour, including switches between provider families.
+
 ## Client capability ownership
 
 The client package advertises the protocol behavior it implements. Add each new capability to
@@ -303,6 +334,12 @@ Installation settings gain optional `projectPolicies`. Older coordinators, owner
 
 Native helper, preview monitor and session host journal schemas accept optional private `delegatedApproval` evidence. Public job replies omit it for older strict clients. The coordinator checks its grant epoch, credentials, request revision, plan digest and cancellation deadline before dispatch, including after asynchronous validation. Rollback coordinators must understand this retained journal field. New owner delegation routes require owner authentication and same-origin checks; scoped capabilities advertise their availability. Existing service permission replies are unchanged.
 
+## Restart hold deadline
+
+The coordinator keeps when each finish-current-turns hold started, and whether it passed its deadline, in its private `restart-holds.json`, never in the restart journal or the shared job record, so a rollback coordinator reads the journal unchanged and simply restarts the deadline. Owner clients that send `restartHoldDeadline=1` on restart routes receive an optional reply-only `holdDeadlineExceeded`; strict older clients never receive it. `COMPAT(restartHoldDeadline)` marks the gate; remove it once every owner client floor includes the field.
+
+The optional `restartHoldDeadlineMinutes` installation setting is read by coordinators that include this change. The installation config schema is strict, so a rollback coordinator refuses a config that sets it: remove the setting before rolling back to an earlier coordinator. Leaving it unset keeps the 15-minute default and needs no preparation.
+
 ## Unavailable-provider thread recovery
 
 The optional `agentProviderRecovery` feature advertises recovery through the existing `agent.profile.switch.request`. The client shows recovery in the load error only with this capability; older hosts retain Retry. The request shape and switch marker are unchanged, and the existing `profile_switch_timeline` client gate still applies. Older clients ignore the optional feature and continue using ordinary switching.
@@ -313,4 +350,8 @@ Daemons advertise optional `features.claudeSignInUpgrade` when they accept `prov
 
 ### Live dev mode routes
 
-Coordinators with live dev mode add the owner routes `POST /api/installation/owner/live-dev/query` and `/change`, with schemas in `packages/protocol/src/live-dev.ts`. Interfaces detect support by the query route answering; on an older coordinator the route is unavailable and the Delivery mode card stays hidden. The status schema is non-strict so later fields can be added. The change schema is strict and compare-and-set on `revision`. No WebSocket message changes. The coordinator's new `/hot` upgrade handling applies only in live mode and only to the owner on the public origin; every other upgrade is refused as before.
+Coordinators with live dev mode add the owner routes `POST /api/installation/owner/live-dev/query` and `/change`, with schemas in `packages/protocol/src/live-dev.ts`. Interfaces detect support by the query route answering; on an older coordinator the route is unavailable and the Live development card stays hidden. Since live dev joined the installation type, `/change` sets the type (Live dev to Lab, Reliable to Stable) and `revision` is the type record's, so an older interface that still switches delivery mode keeps working. The status schema is non-strict so later fields can be added. The change schema is strict and compare-and-set on `revision`. No WebSocket message changes. The coordinator's new `/hot` upgrade handling applies only in live mode and only to the owner on the public origin; every other upgrade is refused as before.
+
+## Boot page recovery link
+
+On the canonical origin, coordinators with a `recoveryOrigin` write it to the served page as `window.__VORTEO_RECOVERY_ORIGIN__`, next to the installation descriptor. It is a separate global because interfaces validate the descriptor strictly, so a new descriptor field would fail older interfaces at startup. The boot page shows Open recovery only when the global is an HTTPS origin other than the current one. Older coordinators omit it and the link stays hidden; older interfaces ignore it. `COMPAT(recoveryOriginGlobal)` marks the injection.

@@ -26,6 +26,7 @@ interface CompactHeaderProps {
   /** Back button action. Defaults to navigating back. */
   onBack?: () => void;
   title?: string;
+  titleContent?: ReactNode;
   titleTestID?: string;
   /** A line under the title. */
   subtitle?: ReactNode;
@@ -48,6 +49,7 @@ export function CompactHeader({
   navigation,
   onBack,
   title,
+  titleContent,
   titleTestID,
   subtitle,
   loading = false,
@@ -67,6 +69,11 @@ export function CompactHeader({
     ],
     [floating, insets.top, insets.left, insets.right],
   );
+  const twoLineTitle = !titleContent && !loading && Boolean(title) && Boolean(subtitle);
+  const titleGroupStyle = useMemo(
+    () => [styles.titleGroup, twoLineTitle && styles.twoLineTitleGroup],
+    [twoLineTitle],
+  );
 
   return (
     <IconButtonChromeProvider value="header-island">
@@ -75,13 +82,15 @@ export function CompactHeader({
           <View style={styles.island}>
             {navigation === "menu" ? <SidebarMenuToggle /> : <BackButton onBack={onBack} />}
           </View>
-          <View style={styles.titleGroup}>
-            <CompactHeaderTitle
-              loading={loading}
-              title={title}
-              titleTestID={titleTestID}
-              subtitle={subtitle}
-            />
+          <View style={titleGroupStyle}>
+            {titleContent ?? (
+              <CompactHeaderTitle
+                loading={loading}
+                title={title}
+                titleTestID={titleTestID}
+                subtitle={subtitle}
+              />
+            )}
           </View>
           {actions ? <View style={styles.island}>{actions}</View> : null}
         </View>
@@ -164,6 +173,12 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     // Both title lines receive the remaining width; text alignment does not size the slot.
     alignItems: "stretch",
+  },
+  // Two text lines put their glyphs low in their line boxes: measured on an iPhone, the block's
+  // optical center sat about 2pt under the icon buttons' center. The extra bottom padding lifts
+  // the centered block by half its height, 1.5px.
+  twoLineTitleGroup: {
+    paddingBottom: 3,
   },
   island: {
     flexDirection: "row",

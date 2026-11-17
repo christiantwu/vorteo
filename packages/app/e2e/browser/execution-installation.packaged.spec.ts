@@ -1,5 +1,9 @@
 import { openSettings } from "../support/helpers/app";
-import { revealSettingsLocation } from "../support/helpers/settings";
+import { completeInstallationSetupGuide } from "../support/helpers/installation-setup-guide";
+import {
+  openSettingsEnvironmentExceptions,
+  revealSettingsLocation,
+} from "../support/helpers/settings";
 import { helperReviewFixture } from "../../src/execution-installation/helper-review.fixture";
 import { NativeHelperJobSchema } from "@getpaseo/protocol/native-helper-maintenance";
 import { MaintenanceServiceJobSchema } from "@getpaseo/protocol/maintenance-service";
@@ -68,6 +72,15 @@ import { RestartJobSchema } from "@getpaseo/protocol/execution-installation";
 // Measure the first document load in each fresh test context, including failures.
 // This is browser load latency, not application readiness or later reload latency.
 const test = base.extend<{ firstLoadTiming: void }>({
+  // Seed the completed setup guide before any page exists, so the first load, reloads
+  // and context.newPage() recovery pages all open without the guide covering Settings.
+  context: async ({ context }, provideContext) => {
+    await completeInstallationSetupGuide(context, {
+      installationId: config.public.installationId,
+      origin,
+    });
+    await provideContext(context);
+  },
   firstLoadTiming: [
     async ({ page }, runTest, info) => {
       let startedAt: number | null = null;
@@ -147,22 +160,36 @@ const ownerPassword = "installation-browser-owner-password";
 const guestToken = "installation-browser-guest-request-token";
 const hostToken = "installation-browser-host-request-token";
 
+function phoneUnlockButton(page: Page) {
+  return page
+    .getByRole("button", { name: /^Unlock / })
+    .filter({ visible: true })
+    .first();
+}
+
 async function openOwnerUnlock(page: Page) {
   await expect(
     page
       .getByTestId("installation-password")
       .or(page.getByTestId("installation-owner-unlock"))
       .or(page.getByTestId("owner-access-owner-unlock"))
+      .or(phoneUnlockButton(page))
       .filter({ visible: true })
       .first(),
   ).toBeVisible();
   if (await page.getByTestId("installation-password").isVisible()) return;
-  await page
+  const lockControl = page
     .getByTestId("installation-owner-unlock")
     .or(page.getByTestId("owner-access-owner-unlock"))
     .filter({ visible: true })
-    .first()
-    .click();
+    .first();
+  if (await lockControl.isVisible()) {
+    await lockControl.click();
+    return;
+  }
+  // Phone Settings opens on a detail page without the sidebar lock control. There an owner
+  // taps a locked card's Unlock button ("Unlock <section>"), which opens the same password sheet.
+  await phoneUnlockButton(page).click();
 }
 
 async function connectReadyInstallationDaemon(kind: "host" | "container") {
@@ -2636,7 +2663,8 @@ test("shared plugins preserve source review on failure and project one catalog t
   ).toBeVisible();
   await expect(page.getByTestId("shared-plugin-source")).toHaveValue(source);
   const unlock = await context.newPage();
-  await unlock.goto(origin);
+  await unlock.goto(`${origin}/settings/general`);
+  await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
   await expect(unlock.getByTestId("installation-password")).not.toBeVisible();
@@ -2743,9 +2771,11 @@ test("shared plugins preserve source review on failure and project one catalog t
   await page.screenshot({ path: info.outputPath("shared-plugins.png"), fullPage: true });
   await page.goto(`${origin}/settings/environments`);
   const dev = daemons[0]!;
-  const availability = page
-    .getByTestId(`settings-environment-${dev.serverId}`)
-    .getByRole("switch", { name: "Plugin: shared-browser availability", exact: true });
+  // Per-environment availability lives in the environment dialog's exceptions group.
+  const availability = (await openSettingsEnvironmentExceptions(page, dev.serverId)).getByRole(
+    "switch",
+    { name: "Plugin: shared-browser availability", exact: true },
+  );
   await expect(availability).toBeChecked();
   await availability.click();
   await expect(availability).not.toBeChecked();
@@ -2825,8 +2855,9 @@ test("directory bindings stay local and preserve an excluded plugin through vali
     });
     expect(response.ok()).toBe(true);
     expect(await response.text()).not.toContain(directory);
-    await page
-      .getByTestId(`settings-environment-${dev.serverId}`)
+    await (
+      await openSettingsEnvironmentExceptions(page, dev.serverId)
+    )
       .getByRole("switch", { name: "Plugin: host-authority-test availability", exact: true })
       .click();
     await expect
@@ -2862,7 +2893,7 @@ test("a directory plugin is created once with separate environment paths", async
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
   await page.goto(`${origin}/settings/plugins`);
   await page.getByTestId("shared-plugin-add").click();
-  await page.getByRole("button", { name: "Local directories", exact: true }).click();
+  await page.getByRole("radio", { name: "Local directories", exact: true }).click();
   await page.getByTestId("shared-plugin-source").fill("invalid directory");
   await page.getByTestId("shared-plugin-prepare").click();
   await expect(page.getByRole("alert").filter({ hasText: "Enter a plugin ID" })).toBeVisible();
@@ -3009,7 +3040,7 @@ test("personal skill exclusions retain files and recover from expired owner acce
   const host = config.public.environments.find((environment) => environment.kind === "host");
   if (!skill || !dev || !host) throw new Error("Missing shared skill fixture");
   await page.goto(`${origin}/settings/environments`);
-  const available = page.getByTestId(
+  const available = (await openSettingsEnvironmentExceptions(page, dev.serverId)).getByTestId(
     `resource-availability-${dev.serverId}-skillIdentities-${skill.identity}`,
   );
   await expect(available).toBeChecked();
@@ -3023,13 +3054,14 @@ test("personal skill exclusions retain files and recover from expired owner acce
       .getByText("Unlock Installation controls in General settings to continue.", { exact: true })
       .last(),
   ).toBeVisible();
-  await expect(available).toBeChecked();
   const unlock = await context.newPage();
-  await unlock.goto(origin);
+  await unlock.goto(`${origin}/settings/general`);
+  await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
   await expect(unlock.getByTestId("installation-password")).not.toBeVisible();
   await unlock.close();
+  await expect(available).toBeChecked();
   await available.click();
   await expect(available).not.toBeChecked();
   const response = await page.request.post(`${origin}/api/installation/owner/settings/read`, {
@@ -3123,7 +3155,7 @@ test("shared skill catalog reviews files and preserves drafts through expired ow
   await expect(page.getByTestId("shared-skill-save")).toBeEnabled();
   await page
     .getByTestId("shared-skill-file-run.sh")
-    .getByRole("button", { name: "Inspect file", exact: true })
+    .getByRole("button", { name: "Inspect run.sh", exact: true })
     .click();
   await expect(page.getByText("After: 14 bytes, executable", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("shared-skill-review.png"), fullPage: true });
@@ -3141,7 +3173,8 @@ test("shared skill catalog reviews files and preserves drafts through expired ow
     source.revision,
   );
   const unlock = await context.newPage();
-  await unlock.goto(origin);
+  await unlock.goto(`${origin}/settings/general`);
+  await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
   await expect(unlock.getByTestId("installation-password")).not.toBeVisible();
@@ -3228,7 +3261,7 @@ test("shared skill catalog reviews files and preserves drafts through expired ow
   await expect(page.getByTestId("shared-skill-package-review")).toBeVisible();
   await page
     .getByTestId("shared-skill-file-SKILL.md")
-    .getByRole("button", { name: "Inspect file", exact: true })
+    .getByRole("button", { name: "Inspect SKILL.md", exact: true })
     .click();
   await expect(
     page.getByText("Reviewed shared instructions", { exact: false }).last(),
@@ -3447,6 +3480,8 @@ test("shared account setup preserves the catalog through retries and local remov
     await page.goto(`${origin}/settings/providers`);
     await openProviderPage(page, "codex");
     await openConnectionAction(page, `managed/${creationId}`, "access");
+    // Per-environment Remove and Restore sit under the sheet's Advanced group.
+    await page.getByTestId("provider-manage-advanced-toggle").click();
     const remove = page.getByTestId(`shared-provider-remove-managed/${creationId}-${hostServerId}`);
     await expect(remove).toBeEnabled({ timeout: 60_000 });
     let dialog = page.waitForEvent("dialog");
@@ -4075,9 +4110,10 @@ test("browser tools share one default with explicit environment exceptions", asy
   }
   await page.goto(`${origin}/settings/environments`);
   const dev = daemons[0]!;
-  const availability = page
-    .getByTestId(`settings-environment-${dev.serverId}`)
-    .getByRole("switch", { name: "Browser tools availability", exact: true });
+  const availability = (await openSettingsEnvironmentExceptions(page, dev.serverId)).getByRole(
+    "switch",
+    { name: "Browser tools availability", exact: true },
+  );
   await expect(availability).toBeChecked();
   await availability.click();
   await expect(availability).not.toBeChecked();
@@ -4227,7 +4263,8 @@ test("shared policy saves preserve drafts and show retryable errors", async ({ p
     }
   }
   await page.goto(`${origin}/settings/environments`);
-  await expect(page.getByTestId("settings-environment-tabs")).toBeVisible();
+  // Environments lists one row per environment; tabs are gone.
+  await expect(page.locator('[data-testid^="settings-environment-row-"]').first()).toBeVisible();
   await expect(page.getByTestId("host-page-restart-button")).toHaveCount(0);
   const details = await openSystemDetails(page, "Dev");
   await expect(details.getByTestId("installation-card")).toBeVisible();

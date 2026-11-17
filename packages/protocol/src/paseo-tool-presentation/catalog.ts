@@ -144,6 +144,8 @@ export const PASEO_TOOL_CATALOG = {
   update_checklist: { label: "Update checklist", completedLabel: "Updated checklist" },
   get_questions: { label: "Read questions", completedLabel: "Read questions" },
   update_questions: { label: "Update questions", completedLabel: "Updated questions" },
+  publish_preview: { label: "Publish preview", completedLabel: "Published preview" },
+  get_preview_feedback: { label: "Read preview feedback", completedLabel: "Read preview feedback" },
   get_thread_goal: { label: "Read thread goal", completedLabel: "Read thread goal" },
   update_thread_goal: { label: "Update thread goal", completedLabel: "Updated thread goal" },
   pause_goal: { label: "Pause goal", completedLabel: "Paused goal" },
@@ -196,6 +198,23 @@ export const PASEO_TOOL_CATALOG = {
     completedLabel: "Set agent mode",
     context: field("modeId"),
     detail: { inputOrder: ["agentId", "modeId"] },
+  },
+  switch_agent_profile: {
+    label: "Switch thread account",
+    completedLabel: "Switched thread account",
+    context: targetAgent(),
+    detail: {
+      inputOrder: [
+        "agentId",
+        "workspaceId",
+        "projectId",
+        "sourceProvider",
+        "provider",
+        "profileId",
+        "reason",
+        "dryRun",
+      ],
+    },
   },
   cancel_agent: {
     label: "Cancel agent",
