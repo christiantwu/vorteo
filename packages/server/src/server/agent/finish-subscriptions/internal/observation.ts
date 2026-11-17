@@ -10,7 +10,11 @@ import type { AgentStreamEvent } from "../../agent-sdk-types.js";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import type { FinishObservation } from "../index.js";
 import type { StoredAgentRecord } from "../../agent-storage.js";
-import { NOT_RUNNING_CANCEL_REASON } from "./observation-buffer.js";
+import { NOT_RUNNING_CANCEL_REASON, REOPEN_FAILED_CANCEL_REASON } from "./observation-buffer.js";
+import { ensureAgentLoaded } from "../../agent-loading.js";
+import { setTimeout as pause } from "node:timers/promises";
+
+const ADOPTION_POLL_MS = 250;
 
 /**
  * A child closed at rest without an archive: a daemon restart or an idle release closed it, and it
@@ -34,6 +38,45 @@ export function createFinishObservation(input: {
   logger: Logger;
 }): FinishObservation {
   const { agentManager, agentStorage } = input;
+  type Publish = (snapshot: AgentSnapshotPayload | null, event?: AgentStreamEvent) => void;
+  /**
+   * Resolves a child whose hosted session was pending adoption when the watch opened. A busy
+   * child reports through live events. An idle one may have finished during the restart, which
+   * the load applies as history without a live completion, so it is reported here. A child that
+   * cannot be reopened ends the watch with an honest notice instead of waiting forever.
+   */
+  async function followAdoption(agentId: string, signal: AbortSignal, publish: Publish) {
+    const adopting = () =>
+      input.pendingAdoption?.(agentId) === true && !agentManager.getAgent(agentId);
+    while (adopting()) await pause(ADOPTION_POLL_MS, undefined, { signal });
+    let current;
+    try {
+      // Joins the adoption load when it is still in flight, or takes over a released session.
+      current = await ensureAgentLoaded(agentId, {
+        agentManager,
+        agentStorage,
+        logger: input.logger,
+      });
+    } catch (error) {
+      signal.throwIfAborted();
+      input.logger.warn({ err: error, agentId }, "A watched child could not be reopened");
+      const stored = await agentStorage.get(agentId);
+      // An archived or deleted child reports closed or unavailable as usual.
+      if (!stored || stored.archivedAt)
+        publish(stored ? buildStoredAgentPayload(stored, [stored.provider]) : null);
+      else
+        publish(
+          { ...buildStoredAgentPayload(stored, [stored.provider]), status: "idle" },
+          { type: "turn_canceled", provider: stored.provider, reason: REOPEN_FAILED_CANCEL_REASON },
+        );
+      return;
+    }
+    if (current.lifecycle === "idle" && !agentManager.hasInFlightRun(agentId))
+      publish(toAgentPayload(current, { title: current.config.title ?? undefined }), {
+        type: "turn_completed",
+        provider: current.provider,
+      });
+  }
   const resolver = createHostObservationResolver({
     serverId: input.serverId,
     hosts: input.hosts,
@@ -117,9 +160,12 @@ export function createFinishObservation(input: {
             type: "turn_started",
             provider: current.provider,
           });
-        else if (input.pendingAdoption?.(agentId)) {
-          // Its turn is still running in the session host; the adoption load reports it live.
-        } else if (stored && closedAtRest(stored))
+        else if (input.pendingAdoption?.(agentId))
+          // Its turn is still running in the session host; follow the adoption load.
+          void followAdoption(agentId, signal, publish).catch((error: unknown) => {
+            if (!signal.aborted) onError(error);
+          });
+        else if (stored && closedAtRest(stored))
           // Tell the watcher once that the child is not running; the subscription stays armed.
           publish(
             { ...buildStoredAgentPayload(stored, [stored.provider]), status: "idle" },
