@@ -1854,8 +1854,8 @@ export async function createPaseoDaemon(
   });
   // A hosted session that ends with its host continues the way a restart would when it had a turn
   // or background work in progress; an idle one is released and reopens on demand.
-  sessionHostRouting.onSessionLost = (agentId, loss) => {
-    void agentManager.continueAfterHostedSessionLoss(agentId, loss);
+  sessionHostRouting.onSessionLost = (agentId, loss, reason) => {
+    void agentManager.continueAfterHostedSessionLoss(agentId, loss, reason);
   };
   const hostedIdleRelease = startIdleReleaseForUpgrade(
     config.paseoHome,
@@ -2483,7 +2483,7 @@ export async function createPaseoDaemon(
           .get(agentId)
           .then((record) =>
             record?.lastStatus === "running" && !record.archivedAt
-              ? agentManager.continueAfterHostedSessionLoss(agentId)
+              ? agentManager.continueAfterHostedSessionLoss(agentId, "turn", "recorded_running")
               : undefined,
           )
           .catch((error: unknown) =>
