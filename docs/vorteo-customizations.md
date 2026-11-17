@@ -1,5 +1,9 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-16): Release preparation for 26.11.1601. Folded the OpenCode unloaded-history fragment and recorded the Host and Dev installed commits for 26.11.1600. Functionality beyond that fix, README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-16): Account switching within a thread now records the OpenCode exception to history reads that never resume a thread: OpenCode-family threads with a native session on an available provider load through their provider, and every other provider keeps the saved-history path. A focused session test covers the case. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-16): Release preparation for 26.11.1600. Folded 87 change fragments into the changelog and this inventory. Functionality, README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-14): Checkout discovery now uses the canonical Git directory and common directory to distinguish linked worktrees without adding status scans or upstream calculations. Recovery normalizes the unavailable classification of unowned archived records that name their own checkout as the source, without rewriting retained records or recreating missing directories. Existing real-Git tests now cover bare sources, checkout aliases and records archived before reconciliation. Historical submodule classification is unchanged and remains a known limitation. README overview and onboarding are unchanged; no merge or installation is included.
