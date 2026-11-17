@@ -2639,7 +2639,7 @@ test("shared plugins preserve source review on failure and project one catalog t
   ).toBeVisible();
   await expect(page.getByTestId("shared-plugin-source")).toHaveValue(source);
   const unlock = await context.newPage();
-  await unlock.goto(origin);
+  await unlock.goto(`${origin}/settings/general`);
   await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
@@ -3016,7 +3016,7 @@ test("personal skill exclusions retain files and recover from expired owner acce
   const host = config.public.environments.find((environment) => environment.kind === "host");
   if (!skill || !dev || !host) throw new Error("Missing shared skill fixture");
   await page.goto(`${origin}/settings/environments`);
-  const available = page.getByTestId(
+  const available = (await openSettingsEnvironmentExceptions(page, dev.serverId)).getByTestId(
     `resource-availability-${dev.serverId}-skillIdentities-${skill.identity}`,
   );
   await expect(available).toBeChecked();
@@ -3030,14 +3030,14 @@ test("personal skill exclusions retain files and recover from expired owner acce
       .getByText("Unlock Installation controls in General settings to continue.", { exact: true })
       .last(),
   ).toBeVisible();
-  await expect(available).toBeChecked();
   const unlock = await context.newPage();
-  await unlock.goto(origin);
+  await unlock.goto(`${origin}/settings/general`);
   await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
   await expect(unlock.getByTestId("installation-password")).not.toBeVisible();
   await unlock.close();
+  await expect(available).toBeChecked();
   await available.click();
   await expect(available).not.toBeChecked();
   const response = await page.request.post(`${origin}/api/installation/owner/settings/read`, {
@@ -3149,7 +3149,7 @@ test("shared skill catalog reviews files and preserves drafts through expired ow
     source.revision,
   );
   const unlock = await context.newPage();
-  await unlock.goto(origin);
+  await unlock.goto(`${origin}/settings/general`);
   await openOwnerUnlock(unlock);
   await unlock.getByTestId("installation-password").fill(ownerPassword);
   await unlock.getByTestId("installation-unlock").click();
