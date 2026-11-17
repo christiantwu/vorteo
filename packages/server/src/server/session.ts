@@ -5672,7 +5672,13 @@ export class Session {
     const logFields = { agentId, requestId, provider: msg.provider, profileId: msg.profileId };
     this.sessionLogger.info(logFields, "session: agent.profile.switch.request");
     try {
-      await switchAgentProfileCommand(
+      const actorId = this.actorPrincipalId();
+      const actorLabel =
+        actorId === "owner"
+          ? undefined
+          : (await this.servicePrincipals?.list())?.find((principal) => principal.id === actorId)
+              ?.label;
+      const result = await switchAgentProfileCommand(
         {
           agentManager: this.agentManager,
           agentStorage: this.agentStorage,
@@ -5684,10 +5690,38 @@ export class Session {
             this.providerSnapshotManager.validateAgentConfiguration(selection),
         },
         msg,
+        {
+          includeResult: true,
+          actor: { kind: "principal", id: actorId, label: actorLabel },
+          validateScope: async (source) => {
+            const expected = msg.sourceScope;
+            if (!expected) return;
+            if (
+              source.provider !== expected.provider ||
+              source.cwd !== expected.cwd ||
+              source.workspaceId !== expected.workspaceId
+            ) {
+              throw new Error("Thread no longer matches the selected source account or workspace");
+            }
+            if (expected.projectId) {
+              const workspace = source.workspaceId
+                ? await this.workspaceRegistry.get(source.workspaceId)
+                : undefined;
+              if (workspace?.projectId !== expected.projectId)
+                throw new Error("Thread no longer belongs to the selected project");
+            }
+          },
+        },
       );
       this.emit({
         type: "agent.profile.switch.response",
-        payload: { requestId, agentId, accepted: true, error: null },
+        payload: {
+          requestId,
+          agentId,
+          accepted: result.outcome !== "refused",
+          error: result.error ?? null,
+          result,
+        },
       });
     } catch (error) {
       this.sessionLogger.error({ err: error, ...logFields }, "session: agent.profile.switch error");

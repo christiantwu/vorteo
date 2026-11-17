@@ -20,7 +20,12 @@ import type { Logger } from "pino";
 
 import type { AgentMode, AgentProvider, AgentSessionConfig } from "../agent-sdk-types.js";
 import type { AgentManager } from "../agent-manager.js";
-import { ActiveTurnBehaviorSchema, AgentProfileSchema } from "@getpaseo/protocol/messages";
+import {
+  AgentProfileSwitchResultSchema,
+  type AgentProfileSwitchResult,
+  ActiveTurnBehaviorSchema,
+  AgentProfileSchema,
+} from "@getpaseo/protocol/messages";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import {
   AgentFeatureSchema,
@@ -45,6 +50,10 @@ import {
   requireActiveWorkspaceForArchive,
   type ArchiveDependencies,
 } from "../../workspace-archive-service.js";
+import {
+  selectProfileSwitchCandidates,
+  switchAgentProfileCommand,
+} from "../profile-switch/command.js";
 import { createAgentCommand, type CreateAgentFromMcpInput } from "../create-agent/create.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "../../voice-types.js";
 import type { FirstAgentContext } from "../../messages.js";
@@ -1766,6 +1775,143 @@ function createToolCatalog(
           removedDirectory: result.removedDirectory,
         }),
       };
+    },
+  );
+
+  registerTool(
+    "switch_agent_profile",
+    {
+      title: "Switch thread account",
+      description:
+        "Switch one thread, or a snapshot of a workspace or project's threads on a source account. Requires a reason. Dry runs check eligibility without changing sessions or history. Each thread succeeds or refuses independently.",
+      inputSchema: {
+        agentId: z.string().min(1).optional(),
+        workspaceId: z.string().min(1).optional(),
+        projectId: z.string().min(1).optional(),
+        sourceProvider: z.string().min(1).optional(),
+        provider: z.string().min(1),
+        profileId: z.string().min(1).optional(),
+        reason: z.string().trim().min(1),
+        dryRun: z.boolean().optional().default(false),
+      },
+      outputSchema: { results: z.array(AgentProfileSwitchResultSchema) },
+    },
+    async ({
+      agentId,
+      workspaceId,
+      projectId,
+      sourceProvider,
+      provider,
+      profileId,
+      reason,
+      dryRun,
+    }) => {
+      const caller = resolveCallerAgent();
+      if (!caller)
+        throw new PaseoToolInputError("Account switches require an agent-scoped session");
+      if (agentId && (workspaceId || projectId || sourceProvider)) {
+        throw new PaseoToolInputError("Select a thread or a workspace/project and source account");
+      }
+      const selection = { workspaceId, projectId, sourceProvider: sourceProvider ?? "" };
+      const workspaces = (await options.workspaceRegistry?.list()) ?? [];
+      const candidates = agentId
+        ? [agentId]
+        : selectProfileSwitchCandidates({
+            agents: await agentStorage.list(),
+            workspaces,
+            selection,
+          });
+      const results: AgentProfileSwitchResult[] = [];
+      for (const id of candidates) {
+        try {
+          const record = await agentStorage.get(id);
+          if (!record) {
+            results.push({ agentId: id, outcome: "skipped", error: "Thread no longer exists" });
+            continue;
+          }
+          if (
+            !agentId &&
+            !selectProfileSwitchCandidates({
+              agents: [record],
+              workspaces: (await options.workspaceRegistry?.list()) ?? [],
+              selection,
+            }).includes(id)
+          ) {
+            results.push({
+              agentId: id,
+              outcome: "skipped",
+              error: "Thread no longer matches the selection",
+            });
+            continue;
+          }
+          if (!isSameOrDescendantPath(resolveScopedCwd(record.cwd), expandUserPath(record.cwd))) {
+            throw new PaseoToolInputError("Thread is outside the caller's directory scope");
+          }
+          results.push(
+            await switchAgentProfileCommand(
+              {
+                agentManager,
+                agentStorage,
+                providerSnapshotManager,
+                logger: childLogger,
+                getAgentProfiles: () => daemonConfigStore?.get().agentProfiles ?? [],
+                ...(daemonConfigStore
+                  ? { getSharedProviderConfig: () => daemonConfigStore.get() }
+                  : {}),
+                validateSharedConfiguration: (selected) =>
+                  providerSnapshotManager.validateAgentConfiguration(selected),
+              },
+              {
+                agentId: id,
+                provider,
+                profileId,
+                explanation: reason,
+                dryRun,
+              },
+              {
+                includeResult: true,
+                actor: { kind: "agent", id: caller.id },
+                validateScope: async (source) => {
+                  if (
+                    source.cwd !== record.cwd ||
+                    source.provider !== record.provider ||
+                    source.workspaceId !== record.workspaceId
+                  ) {
+                    throw new PaseoToolInputError(
+                      "Thread moved outside the checked selection. Retry the switch.",
+                    );
+                  }
+                  if (
+                    !agentId &&
+                    !selectProfileSwitchCandidates({
+                      agents: [{ id, ...source }],
+                      workspaces: (await options.workspaceRegistry?.list()) ?? [],
+                      selection,
+                    }).includes(id)
+                  ) {
+                    throw new PaseoToolInputError("Thread no longer matches the selection");
+                  }
+                  if (
+                    !isSameOrDescendantPath(
+                      resolveScopedCwd(source.cwd),
+                      expandUserPath(source.cwd),
+                    )
+                  ) {
+                    throw new PaseoToolInputError("Thread is outside the caller's directory scope");
+                  }
+                },
+              },
+            ),
+          );
+        } catch (error) {
+          results.push({
+            agentId: id,
+            outcome: "refused",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return { content: [], structuredContent: ensureValidJson({ results }) };
     },
   );
 
