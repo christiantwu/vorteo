@@ -1,13 +1,13 @@
 import { compileFunction } from "node:vm";
 import type { BrowserContext } from "@playwright/test";
 import { expect, it } from "vitest";
-import { createVorteoGuide } from "../../../src/onboarding/vorteo-guide/model";
-import { createGuideStorage, guideStorageKey } from "../../../src/onboarding/vorteo-guide/storage";
+import { createVorteoGuide } from "./model";
+import { createGuideStorage, guideStorageKey } from "./storage";
 import {
   completeInstallationSetupGuide,
   seedInstallationSetupGuide,
   type InstallationGuideEnvironment,
-} from "./installation-setup-guide";
+} from "../../../e2e/support/helpers/installation-setup-guide";
 
 class MemoryStorage implements Pick<Storage, "getItem" | "setItem" | "removeItem"> {
   readonly entries = new Map<string, string>();
