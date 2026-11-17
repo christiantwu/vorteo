@@ -652,6 +652,18 @@ export function isQuotaAdmissionRefusal(error: unknown): boolean {
 }
 
 /**
+ * The team a quota latch covers: a worker-profile supervisor and its workers. A thread whose
+ * parent is not such a supervisor is its own root. Shared by the stop and the startup release.
+ */
+function quotaTeamRoot(
+  thread: { id: string },
+  parentId: string | undefined,
+  parentConfig: { profileLaunch?: { worker?: unknown } | null } | null | undefined,
+): string {
+  return parentId && parentConfig?.profileLaunch?.worker ? parentId : thread.id;
+}
+
+/**
  * The quota latch a child inherits from its parent. A parent's latch means its account is
  * limited, so it holds only a child on that same account; see pauseQuotaTeam.
  */
@@ -1561,7 +1573,7 @@ export class AgentManager {
     if (!parentId) return failed.id;
     const config =
       this.agents.get(parentId)?.config ?? (await this.registry?.get(parentId))?.config;
-    return config?.profileLaunch?.worker ? parentId : failed.id;
+    return quotaTeamRoot(failed, parentId, config);
   }
 
   /**
@@ -1660,8 +1672,8 @@ export class AgentManager {
     const byId = new Map(records.map((record) => [record.id, record]));
     // Same team root as quotaRootId: a worker-profile supervisor and its workers.
     const rootOf = (record: StoredAgentRecord) => {
-      const parent = byId.get(record.labels[PARENT_AGENT_ID_LABEL] ?? "");
-      return parent?.config?.profileLaunch?.worker ? parent.id : record.id;
+      const parentId = record.labels[PARENT_AGENT_ID_LABEL];
+      return quotaTeamRoot(record, parentId, parentId ? byId.get(parentId)?.config : undefined);
     };
     const heldAccounts = new Set<string>();
     for (const record of records) {
@@ -1722,6 +1734,8 @@ export class AgentManager {
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
   /** Agents whose idle session is being released; no run may start until the close settles. */
   private readonly automaticCloses = new Set<string>();
+  /** Agents whose closed state is being emitted by an automatic release, not an explicit close. */
+  private readonly releasingRuntimes = new Set<string>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
   private readonly runtimeCleanupIdentities = new WeakMap<AgentSession, object>();
   private readonly collectingRuntimes = new Set<string>();
@@ -4396,6 +4410,14 @@ export class AgentManager {
     }
   }
 
+  /**
+   * True while an automatic release (idle release, hosted upgrade release, runtime collector)
+   * emits this agent's closed state. Subscribers run synchronously inside that emit.
+   */
+  isReleasingRuntime(agentId: string): boolean {
+    return this.releasingRuntimes.has(agentId);
+  }
+
   private isIdleReleasable(agentId: string, expected?: IdleSessionObservation): boolean {
     const agent = this.agents.get(agentId);
     if (!agent?.session || agent.lifecycle !== "idle" || agent.internal) return false;
@@ -4453,7 +4475,15 @@ export class AgentManager {
       persistError = error;
     }
     this.detachPluginTools(agentId);
-    this.emitClosedAgent(closedAgent, { persist: false });
+    // Idle release, the hosted upgrade release and the runtime collector close a runtime that
+    // reopens on demand. Watchers must not take that close as the agent's end.
+    const automatic = condition !== undefined || this.automaticCloses.has(agentId);
+    if (automatic) this.releasingRuntimes.add(agentId);
+    try {
+      this.emitClosedAgent(closedAgent, { persist: false });
+    } finally {
+      this.releasingRuntimes.delete(agentId);
+    }
     this.logger.trace(
       {
         agentId,
