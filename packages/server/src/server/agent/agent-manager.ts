@@ -5249,7 +5249,24 @@ export class AgentManager {
   }
 
   async clearAgentAttention(agentId: string): Promise<void> {
-    const agent = this.requireAgent(agentId);
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      // Viewing a thread must not start its provider, so an unloaded agent's record is updated.
+      const registry = this.requireRegistry();
+      const record = await registry.get(agentId);
+      if (!record) throw new Error(`Agent not found: ${agentId}`);
+      if (!record.requiresAttention) return;
+      const nextRecord: StoredAgentRecord = {
+        ...record,
+        updatedAt: this.nextStoredUpdatedAt(record),
+        requiresAttention: false,
+        attentionReason: null,
+        attentionTimestamp: null,
+      };
+      await registry.upsert(nextRecord);
+      this.dispatchStoredAgentState(nextRecord);
+      return;
+    }
     if (agent.attention.requiresAttention) {
       agent.attention = { requiresAttention: false };
       await this.persistSnapshot(agent);

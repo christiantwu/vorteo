@@ -7774,6 +7774,20 @@ test("markAgentUnread dispatches stored attention to every subscriber", async ()
     attentionReason: "finished",
     attentionTimestamp: expect.any(String),
   });
+
+  // Viewing the closed thread clears its attention without starting its provider.
+  await manager.clearAgentAttention(created.id);
+  expect(manager.getAgent(created.id)).toBeNull();
+  expect(firstClientEvents.at(-1)).toMatchObject({
+    id: created.id,
+    lifecycle: "closed",
+    attention: { requiresAttention: false },
+  });
+  expect(await storage.get(created.id)).toMatchObject({
+    requiresAttention: false,
+    attentionReason: null,
+    attentionTimestamp: null,
+  });
 });
 
 test("reloadAgentSession cancels active run and resumes existing session once thread_started is observed", async () => {
