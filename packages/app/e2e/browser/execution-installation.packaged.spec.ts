@@ -3261,7 +3261,7 @@ test("shared skill catalog reviews files and preserves drafts through expired ow
   await expect(page.getByTestId("shared-skill-package-review")).toBeVisible();
   await page
     .getByTestId("shared-skill-file-SKILL.md")
-    .getByRole("button", { name: "Inspect file", exact: true })
+    .getByRole("button", { name: "Inspect SKILL.md", exact: true })
     .click();
   await expect(
     page.getByText("Reviewed shared instructions", { exact: false }).last(),
