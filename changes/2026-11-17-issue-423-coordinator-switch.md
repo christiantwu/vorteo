@@ -2,6 +2,7 @@
 
 - Add the local account-switch tool and CLI command for individual threads or explicit workspace/project batches, with previews and per-thread outcomes.
 - Record the requesting caller and reason after a committed switch, and report audit failures without hiding the completed switch.
+- Add the account-switch tool to the shared timeline presentation catalog.
 
 ## Maintenance review
 
