@@ -3009,49 +3009,72 @@ test("timeline polling reads saved history without resuming and backs off failed
   }
 });
 
-// OpenCode has no passive history reader (the snapshot manager refuses it), so an unloaded
-// OpenCode-derived thread keeps loading through its provider to show history.
-test("timeline requests load an unloaded OpenCode-derived thread instead of refusing its history", async () => {
-  const record = makeStoredAgent({
-    id: "00000000-0000-4000-8000-000000000118",
-    cwd: process.cwd(),
-    updatedAt: "2026-11-16T00:00:00.000Z",
-  });
-  record.provider = "opencode-work";
-  record.persistence = { provider: "opencode-work", sessionId: "native-opencode" };
-  const client = new CreateAgentTestClient();
-  const resume = vi.spyOn(client, "resumeSession");
-  const manager = new AgentManager({
-    clients: { "opencode-work": client },
-    logger: createTestLogger(),
-  });
-  const providers = new ProviderSnapshotManager({
-    logger: createTestLogger(),
-    providerOverrides: { "opencode-work": { extends: "opencode", label: "Work OpenCode" } },
-  });
-  const emitted: SessionOutboundMessage[] = [];
-  const session = createSessionForWorkspaceTests({
-    liveAgentManager: manager,
-    providerSnapshotManager: providers,
-    agentStorage: { get: async () => record, list: async () => [record] },
-    onMessage: (message) => emitted.push(message),
-  });
-  try {
-    await session.handleMessage({
-      type: "fetch_agent_timeline_request",
-      requestId: "opencode-history",
-      agentId: record.id,
+// Only Claude and Codex transcripts replay in full without resuming. OpenCode refuses passive
+// reads (unstubbed here, so a saved read would hit the real guard), and plugin or ACP providers
+// may replay nothing, so those
+// threads load through their provider. A Claude thread whose transcript replays nothing, such as
+// one never prompted, falls back to loading instead of reporting an unreadable transcript.
+test.each([
+  { provider: "opencode-work", base: "opencode", history: "real", loads: true, savedReads: 0 },
+  { provider: "pi-work", base: "pi", history: "none", loads: true, savedReads: 0 },
+  { provider: "claude-work", base: "claude", history: "answer", loads: false, savedReads: 1 },
+  { provider: "claude-new", base: "claude", history: "none", loads: true, savedReads: 1 },
+] as const)(
+  "timeline requests for an unloaded $base thread with $history history load it: $loads",
+  async ({ provider, base, history, loads, savedReads }) => {
+    const record = makeStoredAgent({
+      id: "00000000-0000-4000-8000-000000000118",
+      cwd: process.cwd(),
+      updatedAt: "2026-11-16T00:00:00.000Z",
     });
-    expect(findByType(emitted, "fetch_agent_timeline_response")?.payload).toMatchObject({
-      error: null,
-      agent: { id: record.id },
+    record.provider = provider;
+    record.persistence = { provider, sessionId: `native-${base}` };
+    const client = new CreateAgentTestClient();
+    const resume = vi.spyOn(client, "resumeSession");
+    const manager = new AgentManager({
+      clients: { [provider]: client },
+      logger: createTestLogger(),
     });
-    expect(resume).toHaveBeenCalledOnce();
-  } finally {
-    await manager.closeAgent(record.id).catch(() => {});
-    await providers.shutdown();
-  }
-});
+    const providers = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: { [provider]: { extends: base, label: `Work ${base}` } },
+    });
+    const savedRead = vi.spyOn(providers, "readSessionHistory");
+    if (history !== "real") {
+      savedRead.mockImplementation(async function* (): AsyncGenerator<AgentStreamEvent> {
+        if (history === "none") return;
+        yield {
+          type: "timeline",
+          provider,
+          item: { type: "assistant_message", text: "Saved answer" },
+        };
+      });
+    }
+    const emitted: SessionOutboundMessage[] = [];
+    const session = createSessionForWorkspaceTests({
+      liveAgentManager: manager,
+      providerSnapshotManager: providers,
+      agentStorage: { get: async () => record, list: async () => [record] },
+      onMessage: (message) => emitted.push(message),
+    });
+    try {
+      await session.handleMessage({
+        type: "fetch_agent_timeline_request",
+        requestId: `${provider}-history`,
+        agentId: record.id,
+      });
+      expect(findByType(emitted, "fetch_agent_timeline_response")?.payload).toMatchObject({
+        error: null,
+        agent: { id: record.id },
+      });
+      expect(resume).toHaveBeenCalledTimes(loads ? 1 : 0);
+      expect(savedRead).toHaveBeenCalledTimes(savedReads);
+    } finally {
+      await manager.closeAgent(record.id).catch(() => {});
+      await providers.shutdown();
+    }
+  },
+);
 
 test("a timeline read crossing close keeps the retained cursor without creating a session", async () => {
   const record = makeStoredAgent({
