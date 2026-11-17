@@ -166,7 +166,11 @@ import {
   type WorkspaceLabelService,
 } from "./workspace-labels/index.js";
 
-import { AgentManager, AgentRunCancellationError } from "./agent/agent-manager.js";
+import {
+  AgentManager,
+  AgentRunCancellationError,
+  type ProviderSubagentHistoryEvent,
+} from "./agent/agent-manager.js";
 import { buildTimelinePromptIndex } from "./agent/timeline-prompt-index.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type {
@@ -9806,8 +9810,9 @@ export class Session {
             this.agentManager,
             agentId,
             "saved",
-            () =>
-              this.agentManager.readStoredSwitchHistory(
+            async () => {
+              const children: ProviderSubagentHistoryEvent[] = [];
+              const rows = await this.agentManager.readStoredSwitchHistory(
                 persistence ? saved : { ...saved, persistence: null },
                 persistence
                   ? this.providerSnapshotManager.readSessionHistory(persistence, {
@@ -9816,21 +9821,21 @@ export class Session {
                       cwd: saved.cwd,
                     })
                   : (async function* () {})(),
-              ),
+                (event) => children.push(event),
+              );
+              this.agentManager.restoreSavedProviderSubagents(agentId, children);
+              return rows;
+            },
             retryHistory,
           ),
         { useRetainedTimeline: !persistence && !saved.profileSwitches?.length },
       );
       return { agentPayload, fetchedControlTimeline };
     };
-    if (
-      !live &&
-      record &&
-      (!isStoredAgentProviderAvailable(record, registeredProviders) ||
-        (!record.persistence?.sessionId && !record.profileSwitches?.length))
-    ) {
-      return fetchSaved(record);
-    }
+    // Reading history never resumes a thread. A resumed thread stays registered with its
+    // whole history resident, so a client paging every saved thread could exhaust the heap.
+    // Sending a message or another interactive request loads it.
+    if (!live && record) return fetchSaved(record);
 
     const load = () =>
       ensureAgentLoadedForTimeline(agentId, {
@@ -9838,7 +9843,7 @@ export class Session {
         agentStorage: this.agentStorage,
         logger: this.sessionLogger,
       });
-    const needsHistory = live ? this.agentManager.needsTimelineHydration(agentId) : Boolean(record);
+    const needsHistory = live ? this.agentManager.needsTimelineHydration(agentId) : false;
     const agent = needsHistory
       ? await loadTimelineHistory(this.agentManager, agentId, "native", load, retryHistory)
       : await load();
