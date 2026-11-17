@@ -143,6 +143,7 @@ class FakeClient implements AgentClient {
   catalog: ProviderCatalog = { models: [], modes: [] };
   features: AgentFeature[] = [];
   createError: Error | null = null;
+  beforeCatalog?: () => Promise<void>;
 
   constructor(readonly provider: AgentProvider) {}
 
@@ -151,6 +152,7 @@ class FakeClient implements AgentClient {
   }
 
   async fetchCatalog(): Promise<ProviderCatalog> {
+    await this.beforeCatalog?.();
     return this.catalog;
   }
 
@@ -312,7 +314,7 @@ test("switch preparation preserves effective settings over target profile defaul
         { includeResult: true },
       ),
     ).toMatchObject({
-      outcome: "would-switch",
+      outcome: "refused",
       modeId: preserved.modeId,
       thinkingOptionId: preserved.thinkingOptionId,
       features: preserved.featureValues,
@@ -372,6 +374,7 @@ test("an eligible switch preview leaves sessions, history, journal and timeline 
     await manager.appendJournal(agent.id, { entryId: randomUUID(), text: "Approved scope" });
     await manager.flush();
     const before = await storage.get(agent.id);
+    expect(before?.persistence).toMatchObject({ provider: "codex" });
     const timeline = await manager.getTimelineRows(agent.id);
     const journal = await manager.readJournal(agent.id);
     const filesBefore = readdirSync(workdir, { recursive: true, withFileTypes: true })
@@ -380,6 +383,11 @@ test("an eligible switch preview leaves sessions, history, journal and timeline 
         join(entry.parentPath, entry.name),
         readFileSync(join(entry.parentPath, entry.name), "utf8"),
       ]);
+    let runtimeStarts = 0;
+    second.beforeCatalog = async () => {
+      runtimeStarts += 1;
+      await second.createSession({ provider: "codex-second", cwd: workdir });
+    };
     const dependencies = {
       agentManager: manager,
       agentStorage: storage,
@@ -400,9 +408,39 @@ test("an eligible switch preview leaves sessions, history, journal and timeline 
       includeResult: true as const,
       actor: { kind: "agent" as const, id: agent.id },
     };
-    expect(
-      await switchAgentProfileCommand(dependencies, { ...target, dryRun: true }, options),
-    ).toMatchObject({ agentId: agent.id, provider: "codex-second", outcome: "would-switch" });
+    const preview = await switchAgentProfileCommand(
+      dependencies,
+      { ...target, dryRun: true },
+      options,
+    );
+    expect(runtimeStarts).toBe(0);
+    expect(preview).toMatchObject({ agentId: agent.id, outcome: "refused" });
+    expect(second.created).toEqual([]);
+    const unloadedManager = new AgentManager({
+      clients: { codex, "codex-second": second },
+      registry: storage,
+      logger: createTestLogger(),
+    });
+    expect(unloadedManager.getAgent(agent.id)).toBeNull();
+    const unloadedPreview = await switchAgentProfileCommand(
+      {
+        ...dependencies,
+        agentManager: unloadedManager,
+        providerSnapshotManager: {
+          ...dependencies.providerSnapshotManager,
+          async *readSessionHistory() {
+            runtimeStarts += 1;
+            await codex.resumeSession({ provider: "codex", sessionId: agent.id });
+            yield { type: "user_message" as const, text: "Saved history" };
+          },
+        },
+      },
+      { ...target, dryRun: true },
+      options,
+    );
+    expect(unloadedPreview).toMatchObject({ outcome: "refused" });
+    expect(runtimeStarts).toBe(0);
+    expect(codex.resumed).toEqual([]);
     const restrictedPreview = await switchAgentProfileCommand(
       {
         ...dependencies,
@@ -438,6 +476,7 @@ test("an eligible switch preview leaves sessions, history, journal and timeline 
         readFileSync(join(entry.parentPath, entry.name), "utf8"),
       ]);
     expect(filesAfter).toEqual(filesBefore);
+    second.beforeCatalog = undefined;
     expect(
       await switchAgentProfileCommand(dependencies, { ...target, dryRun: false }, options),
     ).toMatchObject({ outcome: "switched" });

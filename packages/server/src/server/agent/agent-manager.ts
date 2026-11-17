@@ -270,6 +270,13 @@ export interface AgentProfileSwitchInput {
   storedSource?: { record: StoredAgentRecord; rows: AgentTimelineRow[] };
 }
 
+interface AgentProfileSwitchPreviewInput extends Pick<
+  AgentProfileSwitchInput,
+  "expectedSource" | "validateScope"
+> {
+  storedSource?: Pick<NonNullable<AgentProfileSwitchInput["storedSource"]>, "record">;
+}
+
 function describeProfileEndpoint(
   config: AgentSessionConfig,
   model: string | null | undefined,
@@ -4008,13 +4015,32 @@ export class AgentManager {
     );
   }
 
-  previewAgentProfile(
-    agentId: string,
-    input: AgentProfileSwitchInput,
-  ): Promise<AgentSessionConfig> {
+  previewAgentProfile(agentId: string, input: AgentProfileSwitchPreviewInput): Promise<never> {
     return this.runLifecycleMutation(agentId, async () => {
-      const prepared = await this.prepareProfileSwitch(agentId, input);
-      return prepared.storedConfig;
+      this.assertAcceptingAgentRegistrations();
+      const { existing, source } = await this.resolveProfileSwitchSource(
+        agentId,
+        input.storedSource,
+      );
+      const expectedSource =
+        input.expectedSource ??
+        structuredClone({
+          config: source.config,
+          runtimeInfo: source.runtimeInfo,
+          workspaceId: source.workspaceId,
+          currentModeId: existing?.currentModeId,
+          features: existing?.features,
+        });
+      await input.validateScope?.({
+        provider: expectedSource.config.provider,
+        cwd: expectedSource.config.cwd,
+        workspaceId: expectedSource.workspaceId,
+      });
+      await this.assertProfileSwitchSourceCurrent(agentId, input, expectedSource, existing);
+      // Provider discovery can start native sessions, including catalog and history reads.
+      throw new ProfileSwitchError(
+        "Target account compatibility cannot be validated passively. Dry run refused without contacting providers.",
+      );
     });
   }
 
@@ -4052,7 +4078,7 @@ export class AgentManager {
 
   private async assertProfileSwitchSourceCurrent(
     agentId: string,
-    input: AgentProfileSwitchInput,
+    input: AgentProfileSwitchPreviewInput,
     expectedSource: NonNullable<AgentProfileSwitchInput["expectedSource"]>,
     existing: ManagedAgent | undefined,
   ): Promise<void> {
@@ -4324,7 +4350,7 @@ export class AgentManager {
 
   private async resolveProfileSwitchSource(
     agentId: string,
-    storedSource: AgentProfileSwitchInput["storedSource"],
+    storedSource: AgentProfileSwitchPreviewInput["storedSource"],
   ) {
     const existing = this.agents.get(agentId);
     const stored = await this.requireRegistry().get(agentId);

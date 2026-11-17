@@ -53,6 +53,9 @@ must match the source checked under the switch lifecycle lock; omitted `workspac
 an unassigned thread, not any workspace. A supplied project must still contain that workspace.
 The response's optional `result` reports each outcome and any audit-write failure. Enhancement
 callers retain structured refusals; legacy callers still reject `accepted: false` responses.
+Dry runs check source metadata and scope without provider callbacks or saved-history loading.
+They currently refuse target compatibility because no passive validation contract is available;
+the optional result shape retains `would-switch` for compatible future implementations.
 
 ## Client capability ownership
 

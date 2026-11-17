@@ -222,7 +222,7 @@ it("switch tool enforces policy, caller scope and exact batch membership", async
     });
     expect(result.structuredContent).toMatchObject({
       results: [
-        { agentId: target.id, outcome: "would-switch" },
+        { agentId: target.id, outcome: "refused", error: expect.stringContaining("passively") },
         { agentId: outside.id, outcome: "refused" },
       ],
     });

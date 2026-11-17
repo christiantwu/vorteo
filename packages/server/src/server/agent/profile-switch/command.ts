@@ -128,16 +128,12 @@ async function executeSwitchCommand(
   captureSource: (result: AgentProfileSwitchResult) => void,
 ): Promise<AgentProfileSwitchResult> {
   const { agentManager } = dependencies;
-  const { input, live, record, settings } = await prepareCommand(
+  const { input, record, settings } = await prepareCommand(
     dependencies,
     target,
-    options,
+    options ?? {},
     captureSource,
   );
-  if (target.dryRun) {
-    const preview = await agentManager.previewAgentProfile(target.agentId, input);
-    return switchResult(target.agentId, "would-switch", preview, live ? live.lifecycle : "closed");
-  }
   const switched = await agentManager.switchAgentProfile(target.agentId, input);
   const result = switchResult(
     target.agentId,
@@ -187,7 +183,7 @@ function switchResult(
 async function prepareCommand(
   dependencies: ProfileSwitchDependencies,
   target: ProfileSwitchTarget,
-  options: ProfileSwitchOptions | undefined,
+  options: ProfileSwitchOptions,
   captureSource: (result: AgentProfileSwitchResult) => void,
 ) {
   const { agentManager, agentStorage, providerSnapshotManager } = dependencies;
@@ -234,6 +230,13 @@ async function prepareCommand(
       sourceResult.status ?? "closed",
     ),
   });
+  if (target.dryRun) {
+    return agentManager.previewAgentProfile(target.agentId, {
+      expectedSource,
+      validateScope: options.validateScope,
+      storedSource: live ? undefined : { record },
+    });
+  }
   const history = (async function* () {
     if (record.persistence) {
       yield* providerSnapshotManager.readSessionHistory(record.persistence, sourceConfig);
@@ -251,21 +254,16 @@ async function prepareCommand(
     cwd: record.cwd,
     title: sourceConfig.title,
     mcpServers: sourceConfig.mcpServers,
-    systemPrompt: options?.standingInstructions,
+    systemPrompt: options.standingInstructions,
     profileId: target.profileId,
     model: target.model ?? undefined,
   };
   const input = {
-    validateScope: options?.validateScope,
+    validateScope: options.validateScope,
     expectedSource,
     preservedSettings,
     storedSource,
-    config: await resolveProfileSwitchConfig(
-      dependencies,
-      config,
-      preservedSettings,
-      target.dryRun === true,
-    ),
+    config: await resolveProfileSwitchConfig(dependencies, config, preservedSettings),
     reason: target.reason ?? ("manual" as const),
     carriedContextChars: 0,
     carryContext: (context: string) =>
@@ -279,7 +277,7 @@ async function prepareCommand(
         context,
       }),
   };
-  return { input, live, record, settings };
+  return { input, record, settings };
 }
 
 function describeActor(
