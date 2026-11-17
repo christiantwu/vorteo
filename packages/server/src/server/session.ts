@@ -166,7 +166,11 @@ import {
   type WorkspaceLabelService,
 } from "./workspace-labels/index.js";
 
-import { AgentManager, AgentRunCancellationError } from "./agent/agent-manager.js";
+import {
+  AgentManager,
+  AgentRunCancellationError,
+  type ProviderSubagentHistoryEvent,
+} from "./agent/agent-manager.js";
 import { buildTimelinePromptIndex } from "./agent/timeline-prompt-index.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type {
@@ -367,6 +371,11 @@ type ProviderSubagentManagerEvent = Extract<
 // Clients before 0.1.45 validate providers with z.enum(["claude", "codex", "opencode"]) and reject
 // the entire session message if they encounter an unknown provider.
 const LEGACY_PROVIDER_IDS = new Set(["claude", "codex", "opencode"]);
+// AgentManager.readStoredSwitchHistory's refusal when a native session replays no history. A
+// failed saved read is retried as a TimelineHistoryRetryError with the same message.
+const UNREADABLE_TRANSCRIPT_MESSAGE = "The original transcript could not be read.";
+// Provider families whose saved transcripts can be read without resuming the thread.
+const PASSIVE_HISTORY_PROVIDER_FAMILIES = new Set(["claude", "codex"]);
 const MIN_VERSION_ALL_PROVIDERS = "0.1.45";
 const MIN_VERSION_EXPLICIT_WORKSPACE_RECOVERY = "0.1.105";
 function errorToFriendlyMessage(error: unknown): string {
@@ -6438,22 +6447,16 @@ export class Session {
     const agentIds = Array.isArray(agentId) ? agentId : [agentId];
 
     try {
-      await Promise.all(
-        agentIds.map((id) =>
-          ensureAgentLoaded(id, {
-            agentManager: this.agentManager,
-            agentStorage: this.agentStorage,
-            logger: this.sessionLogger,
-          }),
-        ),
-      );
+      // Clearing attention updates an unloaded agent's record without starting its provider.
       await Promise.all(agentIds.map((id) => this.agentManager.clearAgentAttention(id)));
       if (requestId) {
         const agents = (
           await Promise.all(
             agentIds.map(async (id) => {
               const agent = this.agentManager.getAgent(id);
-              return agent ? this.buildAgentPayload(agent) : null;
+              if (agent) return this.buildAgentPayload(agent);
+              const record = await this.agentStorage.get(id);
+              return record ? this.buildStoredAgentPayload(record) : null;
             }),
           )
         ).filter((payload): payload is NonNullable<typeof payload> => payload !== null);
@@ -9781,6 +9784,24 @@ export class Session {
     });
   }
 
+  /**
+   * True for providers in the Claude and Codex families, whose native transcripts replay in
+   * full without resuming the thread. OpenCode refuses passive reads, and plugin and ACP
+   * providers may replay nothing, which the saved path reports as an unreadable transcript.
+   */
+  private readsHistoryPassively(provider: string): boolean {
+    const { providerDefinitions } = this.providerSnapshotManager.getAgentManagerProviderState();
+    const seen = new Set<string>();
+    let current = provider;
+    while (!seen.has(current)) {
+      seen.add(current);
+      const base = providerDefinitions[current]?.derivedFromProviderId;
+      if (!base) break;
+      current = base;
+    }
+    return PASSIVE_HISTORY_PROVIDER_FAMILIES.has(current);
+  }
+
   private async fetchControlTimeline(
     agentId: string,
     options: AgentTimelineFetchOptions,
@@ -9806,8 +9827,9 @@ export class Session {
             this.agentManager,
             agentId,
             "saved",
-            () =>
-              this.agentManager.readStoredSwitchHistory(
+            async () => {
+              const children: ProviderSubagentHistoryEvent[] = [];
+              const rows = await this.agentManager.readStoredSwitchHistory(
                 persistence ? saved : { ...saved, persistence: null },
                 persistence
                   ? this.providerSnapshotManager.readSessionHistory(persistence, {
@@ -9816,20 +9838,39 @@ export class Session {
                       cwd: saved.cwd,
                     })
                   : (async function* () {})(),
-              ),
+                (event) => children.push(event),
+              );
+              this.agentManager.restoreSavedProviderSubagents(agentId, children);
+              return rows;
+            },
             retryHistory,
           ),
         { useRetainedTimeline: !persistence && !saved.profileSwitches?.length },
       );
       return { agentPayload, fetchedControlTimeline };
     };
-    if (
+    // Reading history never resumes a thread. A resumed thread stays registered with its
+    // whole history resident, so a client paging every saved thread could exhaust the heap.
+    // Sending a message or another interactive request loads it. Providers without a reliable
+    // passive history reader keep loading through the provider until they gain one.
+    const loadsForHistory =
       !live &&
-      record &&
-      (!isStoredAgentProviderAvailable(record, registeredProviders) ||
-        (!record.persistence?.sessionId && !record.profileSwitches?.length))
-    ) {
-      return fetchSaved(record);
+      record?.persistence?.sessionId &&
+      isStoredAgentProviderAvailable(record, registeredProviders) &&
+      !this.readsHistoryPassively(record.persistence.provider);
+    if (!live && record && !loadsForHistory) {
+      try {
+        return await fetchSaved(record);
+      } catch (error) {
+        // A thread created and never prompted, or whose transcript is gone, replays nothing.
+        // The saved reader refuses that so an account switch never treats a lost transcript
+        // as empty; a timeline read loads such a thread instead, as before 26.11.1600.
+        const unreadable =
+          error instanceof Error && error.message.startsWith(UNREADABLE_TRANSCRIPT_MESSAGE);
+        if (!unreadable || !isStoredAgentProviderAvailable(record, registeredProviders)) {
+          throw error;
+        }
+      }
     }
 
     const load = () =>
