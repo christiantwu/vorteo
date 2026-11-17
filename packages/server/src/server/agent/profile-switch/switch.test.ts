@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { SwitchHistoryStore } from "./history-store.js";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { AgentManager } from "../agent-manager.js";
 import { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
@@ -98,6 +99,10 @@ class FakeSession implements AgentSession {
     };
   }
 
+  async listCommands() {
+    return [];
+  }
+
   async getAvailableModes() {
     return [];
   }
@@ -122,7 +127,11 @@ class FakeSession implements AgentSession {
 
   async interrupt(): Promise<void> {}
 
-  async close(): Promise<void> {}
+  beforeClose?: () => Promise<void>;
+
+  async close(): Promise<void> {
+    await this.beforeClose?.();
+  }
 }
 
 class FakeClient implements AgentClient {
@@ -163,7 +172,26 @@ class FakeClient implements AgentClient {
   }
 }
 
+class TestSwitchHistory extends SwitchHistoryStore {
+  beforeWrite?: () => Promise<void>;
+
+  override async writeSegment(...args: Parameters<SwitchHistoryStore["writeSegment"]>) {
+    await this.beforeWrite?.();
+    return super.writeSegment(...args);
+  }
+}
+
 class TestStorage extends AgentStorage {
+  override readonly switchHistory: TestSwitchHistory;
+
+  constructor(directory: string, logger: ReturnType<typeof createTestLogger>) {
+    super(directory, logger);
+    this.switchHistory = new TestSwitchHistory({
+      directory: (agentId) => join(directory, "..", "agent-switch-history", agentId),
+      logger,
+    });
+  }
+
   journalError: Error | null = null;
 
   override async appendJournal(...args: Parameters<AgentStorage["appendJournal"]>) {
@@ -375,6 +403,28 @@ test("an eligible switch preview leaves sessions, history, journal and timeline 
     expect(
       await switchAgentProfileCommand(dependencies, { ...target, dryRun: true }, options),
     ).toMatchObject({ agentId: agent.id, provider: "codex-second", outcome: "would-switch" });
+    const restrictedPreview = await switchAgentProfileCommand(
+      {
+        ...dependencies,
+        getAgentProfiles: () => [
+          {
+            id: "restricted",
+            name: "Restricted skills",
+            provider: "codex",
+            model: "model",
+            skillPolicy: { mode: "inherit" as const, include: [], exclude: ["excluded-skill"] },
+          },
+        ],
+      },
+      { ...target, provider: "codex", profileId: "restricted", dryRun: true },
+      options,
+    );
+    expect(codex.created).toHaveLength(1);
+    expect(second.created).toEqual([]);
+    expect(restrictedPreview).toMatchObject({
+      outcome: "refused",
+      error: expect.stringContaining("passive"),
+    });
     await manager.flush();
     expect(codex.created).toHaveLength(1);
     expect(second.created).toEqual([]);
@@ -393,8 +443,12 @@ test("an eligible switch preview leaves sessions, history, journal and timeline 
     ).toMatchObject({ outcome: "switched" });
     const afterJournal = await manager.readJournal(agent.id);
     expect(afterJournal).toHaveLength(2);
-    expect(afterJournal[1]?.text).toContain("Thread “Review work” switched the account");
-    expect(afterJournal[1]?.text).toContain(target.explanation);
+    expect(JSON.parse(afterJournal[1]?.machineContext ?? "null")).toMatchObject({
+      actor: options.actor,
+      reason: target.explanation,
+      from: "codex",
+      to: "codex-second",
+    });
     storage.journalError = new Error("Journal unavailable");
     expect(
       await switchAgentProfileCommand(
@@ -408,6 +462,63 @@ test("an eligible switch preview leaves sessions, history, journal and timeline 
     expect(second.created).toHaveLength(1);
     await manager.closeAgent(agent.id);
   } finally {
+    cleanup();
+  }
+});
+
+test("a restriction queued during history writing applies to the replacement session", async () => {
+  const { workdir, storage, codex, second, manager, cleanup } = await fixture();
+  const writing = Promise.withResolvers<void>();
+  const finishWriting = Promise.withResolvers<void>();
+  const closing = Promise.withResolvers<void>();
+  const finishClosing = Promise.withResolvers<void>();
+  try {
+    second.catalog = {
+      models: [],
+      modes: [{ id: "bypassPermissions", label: "Bypass" }],
+    };
+    const agent = await manager.createAgent(
+      { provider: "codex", cwd: workdir, modeId: "bypassPermissions" },
+      undefined,
+      { workspaceId: undefined },
+    );
+    const sourceSession = codex.sessions[0]!;
+    sourceSession.beforeClose = async () => {
+      closing.resolve();
+      await finishClosing.promise;
+    };
+    storage.switchHistory.beforeWrite = async () => {
+      writing.resolve();
+      await finishWriting.promise;
+    };
+    const switched = switchAgentProfileCommand(
+      {
+        agentManager: manager,
+        agentStorage: storage,
+        logger: createTestLogger(),
+        providerSnapshotManager: {
+          async resolveCreateConfig() {
+            return { modeId: "bypassPermissions", featureValues: undefined };
+          },
+          async *readSessionHistory() {},
+        },
+      },
+      { agentId: agent.id, provider: "codex-second" },
+    );
+    await writing.promise;
+    const restriction = manager.setAgentMode(agent.id, "default");
+    finishWriting.resolve();
+    await closing.promise;
+    finishClosing.resolve();
+    await switched;
+    await restriction;
+    expect(manager.getAgent(agent.id)?.currentModeId).toBe("default");
+    expect(await second.sessions[0]?.getCurrentMode()).toBe("default");
+    expect(await sourceSession.getCurrentMode()).toBe("bypassPermissions");
+    await manager.closeAgent(agent.id);
+  } finally {
+    finishWriting.resolve();
+    finishClosing.resolve();
     cleanup();
   }
 });

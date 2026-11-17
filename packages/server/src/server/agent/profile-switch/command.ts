@@ -260,7 +260,12 @@ async function prepareCommand(
     expectedSource,
     preservedSettings,
     storedSource,
-    config: await resolveProfileSwitchConfig(dependencies, config, preservedSettings),
+    config: await resolveProfileSwitchConfig(
+      dependencies,
+      config,
+      preservedSettings,
+      target.dryRun === true,
+    ),
     reason: target.reason ?? ("manual" as const),
     carriedContextChars: 0,
     carryContext: (context: string) =>

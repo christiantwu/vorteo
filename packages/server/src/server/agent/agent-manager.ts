@@ -4046,7 +4046,16 @@ export class AgentManager {
       cwd: expectedSource.config.cwd,
       workspaceId: expectedSource.workspaceId,
     });
-    // Provider discovery and scope checks can yield while the source changes.
+    await this.assertProfileSwitchSourceCurrent(agentId, input, expectedSource, existing);
+    return { existing, source, client, expectedSource, ...prepared };
+  }
+
+  private async assertProfileSwitchSourceCurrent(
+    agentId: string,
+    input: AgentProfileSwitchInput,
+    expectedSource: NonNullable<AgentProfileSwitchInput["expectedSource"]>,
+    existing: ManagedAgent | undefined,
+  ): Promise<void> {
     const current = await this.resolveProfileSwitchSource(agentId, input.storedSource);
     if (
       input.validateScope &&
@@ -4075,7 +4084,6 @@ export class AgentManager {
     ) {
       throw new ProfileSwitchError("The thread's settings changed. Retry the account switch.");
     }
-    return { existing, source, client, ...prepared };
   }
 
   private async validateProfileSwitchSettings(
@@ -4173,8 +4181,15 @@ export class AgentManager {
     agentId: string,
     input: AgentProfileSwitchInput,
   ): Promise<ManagedAgent> {
-    const { existing, source, client, storedConfig, launchConfig, paseoToolPolicy } =
-      await this.prepareProfileSwitch(agentId, input);
+    const {
+      existing,
+      source,
+      client,
+      storedConfig,
+      launchConfig,
+      paseoToolPolicy,
+      expectedSource,
+    } = await this.prepareProfileSwitch(agentId, input);
     if (existing) await this.hydrateTimelineFromLegacyProviderHistory(existing);
     const sourceRows = input.storedSource
       ? input.storedSource.rows
@@ -4237,6 +4252,10 @@ export class AgentManager {
         "This thread's history since its last switch is too large to switch accounts safely. Start a new task instead; this thread has not changed.",
       );
     }
+
+    // History and launch preparation yield. Recheck before closing the source; settings
+    // setters share this lifecycle lane and resolve their session only after acquiring it.
+    await this.assertProfileSwitchSourceCurrent(agentId, input, expectedSource, existing);
 
     let session: AgentSession | undefined;
     let closedExisting: ManagedAgentClosed | undefined;
@@ -4883,19 +4902,21 @@ export class AgentManager {
   }
 
   async setAgentMode(agentId: string, modeId: string): Promise<AgentProviderNotice | null> {
-    const agent = this.requireSessionAgent(agentId);
-    const notice = (await agent.session.setMode(modeId)) ?? null;
-    await this.drainSessionEvents(agentId);
-    const currentMode = (await agent.session.getCurrentMode()) ?? modeId;
-    agent.config.modeId = currentMode ?? undefined;
-    agent.currentModeId = currentMode;
-    // Update runtimeInfo to reflect the new mode
-    if (agent.runtimeInfo) {
-      agent.runtimeInfo = { ...agent.runtimeInfo, modeId: currentMode };
-    }
-    this.touchUpdatedAt(agent);
-    this.emitState(agent);
-    return notice;
+    return this.runLifecycleMutation(agentId, async () => {
+      const agent = this.requireSessionAgent(agentId);
+      const notice = (await agent.session.setMode(modeId)) ?? null;
+      await this.drainSessionEvents(agentId);
+      const currentMode = (await agent.session.getCurrentMode()) ?? modeId;
+      agent.config.modeId = currentMode ?? undefined;
+      agent.currentModeId = currentMode;
+      // Update runtimeInfo to reflect the new mode
+      if (agent.runtimeInfo) {
+        agent.runtimeInfo = { ...agent.runtimeInfo, modeId: currentMode };
+      }
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+      return notice;
+    });
   }
 
   /** Null when the agent's provider does not report a context breakdown. */
@@ -5242,70 +5263,76 @@ export class AgentManager {
   }
 
   async setAgentModel(agentId: string, modelId: string | null): Promise<void> {
-    const agent = this.requireSessionAgent(agentId);
-    const normalizedModelId =
-      typeof modelId === "string" && modelId.trim().length > 0 ? modelId : null;
+    return this.runLifecycleMutation(agentId, async () => {
+      const agent = this.requireSessionAgent(agentId);
+      const normalizedModelId =
+        typeof modelId === "string" && modelId.trim().length > 0 ? modelId : null;
 
-    if (agent.session.setModel) {
-      await agent.session.setModel(normalizedModelId);
-    }
-    await this.drainSessionEvents(agentId);
+      if (agent.session.setModel) {
+        await agent.session.setModel(normalizedModelId);
+      }
+      await this.drainSessionEvents(agentId);
 
-    agent.config.model = normalizedModelId ?? undefined;
-    if (agent.runtimeInfo) {
-      agent.runtimeInfo = { ...agent.runtimeInfo, model: normalizedModelId };
-    }
-    this.refreshSessionPersistence(agent);
-    this.touchUpdatedAt(agent);
-    this.emitState(agent);
+      agent.config.model = normalizedModelId ?? undefined;
+      if (agent.runtimeInfo) {
+        agent.runtimeInfo = { ...agent.runtimeInfo, model: normalizedModelId };
+      }
+      this.refreshSessionPersistence(agent);
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+    });
   }
 
   async setAgentThinkingOption(
     agentId: string,
     thinkingOptionId: string | null,
   ): Promise<AgentProviderNotice | null> {
-    const agent = this.requireSessionAgent(agentId);
-    const normalizedThinkingOptionId =
-      typeof thinkingOptionId === "string" && thinkingOptionId.trim().length > 0
-        ? thinkingOptionId
-        : null;
+    return this.runLifecycleMutation(agentId, async () => {
+      const agent = this.requireSessionAgent(agentId);
+      const normalizedThinkingOptionId =
+        typeof thinkingOptionId === "string" && thinkingOptionId.trim().length > 0
+          ? thinkingOptionId
+          : null;
 
-    let notice: AgentProviderNotice | null = null;
-    if (agent.session.setThinkingOption) {
-      notice = (await agent.session.setThinkingOption(normalizedThinkingOptionId)) ?? null;
-    }
-    await this.drainSessionEvents(agentId);
+      let notice: AgentProviderNotice | null = null;
+      if (agent.session.setThinkingOption) {
+        notice = (await agent.session.setThinkingOption(normalizedThinkingOptionId)) ?? null;
+      }
+      await this.drainSessionEvents(agentId);
 
-    let effectiveThinkingOptionId = normalizedThinkingOptionId;
-    const runtimeInfo = await agent.session.getRuntimeInfo();
-    if (runtimeInfo.thinkingOptionId !== undefined) {
-      effectiveThinkingOptionId = runtimeInfo.thinkingOptionId;
-    }
+      let effectiveThinkingOptionId = normalizedThinkingOptionId;
+      const runtimeInfo = await agent.session.getRuntimeInfo();
+      if (runtimeInfo.thinkingOptionId !== undefined) {
+        effectiveThinkingOptionId = runtimeInfo.thinkingOptionId;
+      }
 
-    agent.config.thinkingOptionId = effectiveThinkingOptionId ?? undefined;
-    if (agent.runtimeInfo) {
-      agent.runtimeInfo = {
-        ...agent.runtimeInfo,
-        thinkingOptionId: effectiveThinkingOptionId,
-      };
-    }
-    this.touchUpdatedAt(agent);
-    this.emitState(agent);
-    return notice;
+      agent.config.thinkingOptionId = effectiveThinkingOptionId ?? undefined;
+      if (agent.runtimeInfo) {
+        agent.runtimeInfo = {
+          ...agent.runtimeInfo,
+          thinkingOptionId: effectiveThinkingOptionId,
+        };
+      }
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+      return notice;
+    });
   }
 
   async setAgentFeature(agentId: string, featureId: string, value: unknown): Promise<void> {
-    const agent = this.requireAgent(agentId);
+    return this.runLifecycleMutation(agentId, async () => {
+      const agent = this.requireAgent(agentId);
 
-    if (!agent.session.setFeature) {
-      throw new Error("Agent session does not support setting features");
-    }
+      if (!agent.session.setFeature) {
+        throw new Error("Agent session does not support setting features");
+      }
 
-    await agent.session.setFeature(featureId, value);
-    await this.drainSessionEvents(agentId);
-    agent.config.featureValues = { ...agent.config.featureValues, [featureId]: value };
-    this.touchUpdatedAt(agent);
-    this.emitState(agent);
+      await agent.session.setFeature(featureId, value);
+      await this.drainSessionEvents(agentId);
+      agent.config.featureValues = { ...agent.config.featureValues, [featureId]: value };
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+    });
   }
 
   async setTitle(agentId: string, title: string): Promise<void> {

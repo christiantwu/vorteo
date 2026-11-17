@@ -198,6 +198,7 @@ export async function resolveProfileSwitchConfig(
   dependencies: CreateAgentCommandDependencies,
   config: AgentSessionConfig,
   preservedSettings?: Pick<AgentSessionConfig, "modeId" | "thinkingOptionId" | "featureValues">,
+  passiveOnly = false,
 ): Promise<AgentSessionConfig> {
   const bindings = observeLaunchBindings(dependencies);
   dependencies = await admitProfileDependencies(bindings.dependencies, config.profileId);
@@ -227,7 +228,12 @@ export async function resolveProfileSwitchConfig(
     featureValues: created.featureValues,
   };
   await validateSharedLaunch(dependencies, sessionConfig);
-  await captureLaunchPolicy(dependencies, sessionConfig, { requestedProfileId: config.profileId });
+  await captureLaunchPolicy(
+    dependencies,
+    sessionConfig,
+    { requestedProfileId: config.profileId },
+    passiveOnly,
+  );
   bindings.assertCurrent();
   return sessionConfig;
 }
@@ -862,6 +868,7 @@ async function captureLaunchPolicy(
   dependencies: CreateAgentCommandDependencies,
   config: AgentSessionConfig,
   request: { requestedProfileId: string | undefined },
+  passiveOnly = false,
 ): Promise<void> {
   const settings = dependencies.getSharedProviderConfig?.();
   const provider = resolveProviderType(config.provider, settings?.providers ?? {});
@@ -894,12 +901,18 @@ async function captureLaunchPolicy(
       }
     : undefined;
   let catalog: Promise<DraftSkillCatalog> | undefined;
-  const readCatalog = () =>
-    (catalog ??= dependencies.agentManager.listDraftSkillCatalog({
+  const readCatalog = () => {
+    if (passiveOnly) {
+      throw new Error(
+        "This profile requires native skill discovery; passive account-switch validation is unavailable.",
+      );
+    }
+    return (catalog ??= dependencies.agentManager.listDraftSkillCatalog({
       ...config,
       profileLaunch: undefined,
       skillSnapshot: undefined,
     }));
+  };
   await captureSkillPolicy(config, provider, {
     installation,
     codexHome: launchCodexHome(provider, settings, config.provider),
