@@ -252,7 +252,10 @@ test("a quota-latched parent keeps the finish notification until the latch clear
   await state.service.register(intent);
   await until(() => state.observation.waits.length === 1);
   state.hold(true);
-  state.observation.waits[0]!.result.resolve(outcome());
+  state.observation.waits[0]!.result.resolve({
+    ...outcome(),
+    lastMessage: `Partial work saved ${"x".repeat(5000)}`,
+  });
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(state.delivery.prompts).toHaveLength(0);
   expect(await state.store.list()).toHaveLength(1);
@@ -261,6 +264,10 @@ test("a quota-latched parent keeps the finish notification until the latch clear
   expect(state.service.hasPendingForCaller("parent")).toBe(true);
   // A restart while the outcome waits delivers that outcome, without observing the child again.
   await expect.poll(async () => (await state.store.list())[0]?.captured?.status).toBe("idle");
+  // The stored copy keeps only what the notice formats.
+  const stored = (await state.store.list())[0]!.captured!;
+  expect(stored.lastMessage).toHaveLength(4000);
+  expect(Object.keys(stored.final ?? {}).sort()).toEqual(["labels", "status", "title"]);
   await state.service.close();
   const restarted = await scenario(state.home);
   await until(() => restarted.delivery.prompts.length === 1);

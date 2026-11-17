@@ -25,7 +25,7 @@ export const finishNotificationEvents = {
   "could not be reopened": "errored",
 } as const;
 
-const FINISH_NOTIFICATION_MESSAGE_LIMIT = 4000;
+export const FINISH_NOTIFICATION_MESSAGE_LIMIT = 4000;
 
 interface FinishNotificationBodyInput {
   childAgentId: string;

@@ -8,6 +8,7 @@ import type { FinishObservationResult } from "./internal/observation-buffer.js";
 import type { AgentMessageDelivery } from "../agent-messages/index.js";
 import { getParentAddressFromLabels } from "@getpaseo/protocol/agent-labels";
 import {
+  FINISH_NOTIFICATION_MESSAGE_LIMIT,
   formatFinishNotificationBody,
   finishNotificationEvents,
   type FinishNotificationReason,
@@ -273,9 +274,23 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     if (isCheckpoint(reason)) return;
     for (const intent of watch.records) {
       if (intent.captured) continue;
-      intent.captured = result;
+      intent.captured = storedOutcome(result);
       await deps.store.put({ ...intent });
     }
+  }
+  /**
+   * Every subscription write rewrites one JSON file, so a stored outcome keeps only what its
+   * notice formats: the snapshot's status, title and labels, and the response the notice shows.
+   */
+  function storedOutcome(result: FinishObservationResult): FinishObservationResult {
+    const final = result.final;
+    return {
+      ...result,
+      final: final
+        ? ({ status: final.status, title: final.title, labels: final.labels } as typeof final)
+        : null,
+      lastMessage: result.lastMessage?.slice(0, FINISH_NOTIFICATION_MESSAGE_LIMIT) ?? null,
+    };
   }
   async function recordNotRunningReported(watch: Watch): Promise<void> {
     for (const intent of watch.records) {
