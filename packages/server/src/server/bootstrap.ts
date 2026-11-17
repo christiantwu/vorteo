@@ -1807,6 +1807,14 @@ export async function createPaseoDaemon(
           .map((project) => project.projectId),
       );
     },
+    scheduledWakes: async () =>
+      new Set(
+        (await scheduleService.list()).flatMap((schedule) =>
+          schedule.status === "active" && schedule.nextRunAt && schedule.target.type === "agent"
+            ? [schedule.target.agentId]
+            : [],
+        ),
+      ),
   });
   const usageLimitResumes = new UsageLimitResumeService({
     agentManager,

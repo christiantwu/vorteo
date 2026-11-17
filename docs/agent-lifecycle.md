@@ -187,17 +187,20 @@ left in progress.
   message), and items in review or pending. A thread whose only reviewable items are in
   progress is skipped while a subagent of it runs, or while its already loaded runtime
   reports live background work through the provider's `canStopRuntime`. Providers without
-  that check are reviewed.
+  that check are reviewed. Such a thread is also skipped while an active heartbeat or
+  schedule targets it, since that run wakes it. A thread with a blocked item is still
+  reviewed, because a blocker can clear long before the next scheduled run.
 - **Paused Factory projects.** Role threads of a Factory project the owner has paused or
   drained are not reviewed. Issue leads, workers and reviewers are subagents and are never
   reviewed.
 - **Burst handling.** Due threads are reviewed three at a time.
 - **Caps.** At most 6 reviews per thread per day and 12 per hour for the installation,
-  counted in memory since the daemon started.
+  counted in memory since the daemon started. Only reviews whose prompt was sent count; a
+  skipped review, or one that failed while loading the thread, gives its slot back. The
+  skip line `Blocked-work review skipped at its cap` logs both counts.
 - **Measured.** Each review logs `Blocked-work review finished` with the thread, account,
-  model, the token counts the provider reported, the change in session cost and whether the
-  review changed anything. Providers do not report cache writes in that line; the cost
-  difference includes them.
+  model, the token counts the provider reported and whether the review changed anything.
+  Providers do not report cache writes in that line; read them from the session transcript.
 
 Each review uses the same retained thread and does not create a worker. Manual goal pauses,
 usage limits, queue and restart holds prevent these reviews. A review cannot replace a wake
