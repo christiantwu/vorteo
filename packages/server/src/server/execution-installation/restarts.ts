@@ -728,12 +728,34 @@ export class InstallationRestarts {
       snapshot.filter(
         (job): job is PreviewBrokerDeploymentJob => job.target === "preview-broker-deployment",
       );
-    const retainEvaluatedWrite = (previous: readonly LifecycleJob[], committed: LifecycleJob[]) => {
-      // A preparation-only refresh must not advance the coordinator's evaluated reservation.
-      // Foreign restart/recovery state still needs the normal coordinator reconciliation.
-      if (!isDeepStrictEqual(this.snapshot, previous)) return;
-      this.snapshot = committed;
-      this.brokerDeployments = deployments(committed);
+    const retainEvaluatedWrite = ({
+      previous,
+      committed,
+      expected,
+      written,
+    }: {
+      previous: readonly LifecycleJob[];
+      committed: LifecycleJob[];
+      expected: LifecycleJob | undefined;
+      written: PreviewBrokerDeploymentJob | undefined;
+    }) => {
+      // A no-op bookkeeping mutation cannot import a competing decision or revision.
+      if (!written) return;
+      if (isDeepStrictEqual(this.snapshot, previous)) {
+        this.snapshot = committed;
+        this.brokerDeployments = deployments(committed);
+        return;
+      }
+      // Retain only our durable outcome so legacy queue writes cannot revert it. Foreign
+      // records and ordering remain unevaluated; full-journal reservations still refuse them.
+      const retained = committed.find((job) => job.id === written.id);
+      if (!retained || retained.target !== "preview-broker-deployment") return;
+      const cached = this.snapshot.find((job) => job.id === written.id);
+      if (!expected || !isDeepStrictEqual(cached, expected)) return;
+      this.snapshot = this.snapshot.map((job) => (job.id === retained.id ? retained : job));
+      this.brokerDeployments = this.brokerDeployments.map((job) =>
+        job.id === retained.id && isDeepStrictEqual(job, expected) ? retained : job,
+      );
     };
     const current = () => {
       if (!isDeepStrictEqual(this.journal.read(), reserved))
@@ -766,7 +788,12 @@ export class InstallationRestarts {
           );
           return next;
         });
-        retainEvaluatedWrite(reserved, committed);
+        retainEvaluatedWrite({
+          previous: reserved,
+          committed,
+          expected: reserved.find((prior) => prior.id === job.id),
+          written: job,
+        });
         reserved = committed;
         if (activity && this.operationalActivitySink)
           activity.flush(this.operationalActivitySink, this.now);
@@ -783,6 +810,7 @@ export class InstallationRestarts {
         const activity = this.operationalActivitySink ? createOperationalActivityBatch() : null;
         if (!this.journal.mutate)
           throw new BrokerDeploymentRefused("Atomic deployment journal is unavailable");
+        let written: PreviewBrokerDeploymentJob | undefined;
         let prior: readonly LifecycleJob[] = [];
         let committed: LifecycleJob[] = [];
         this.journal.mutate((previous) => {
@@ -805,13 +833,14 @@ export class InstallationRestarts {
             const detail =
               retained.detail === job.detail ? failure : `${retained.detail} ${failure}`;
             const failed: PreviewBrokerDeploymentJob = { ...retained, status: "failed", detail };
+            written = failed;
             activity?.change(retained, failed);
             return failed;
           });
           committed = parseLifecycleJournal(next);
           return next;
         });
-        retainEvaluatedWrite(prior, committed);
+        retainEvaluatedWrite({ previous: prior, committed, expected: job, written });
         if (activity && this.operationalActivitySink)
           activity.flush(this.operationalActivitySink, this.now);
         const retained = this.listBrokerDeployments().find((item) => item.id === job.id);

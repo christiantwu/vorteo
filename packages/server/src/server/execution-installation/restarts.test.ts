@@ -404,15 +404,22 @@ test.each([
       expect(f.reopen()).toEqual([result, expectedOther]);
       expect(await queue.prepareBrokerDeployment(input, "host-agent")).toEqual(result);
       expect(queue.list()).toEqual([]);
-      expect(() =>
-        queue.decideBrokerDeployment({
-          operation: result.operation,
-          id: result.id,
-          revision: result.revision,
-          planSha256: result.planSha256,
-          decision: "cancel",
-        }),
-      ).toThrowError(expect.objectContaining({ code: "deployment_reservation_changed" }));
+      for (const decision of ["approve", "cancel"] as const) {
+        const decide = () =>
+          queue.decideBrokerDeployment({
+            operation: result.operation,
+            id: result.id,
+            revision: result.revision,
+            planSha256: result.planSha256,
+            decision,
+          });
+        if (outcome === "retry")
+          expect(decide).toThrowError(
+            expect.objectContaining({ code: "deployment_reservation_changed" }),
+          );
+        else
+          expect(decide).toThrowError(expect.objectContaining({ name: "BrokerDeploymentRefused" }));
+      }
       expect(f.reopen()).toEqual([result, expectedOther]);
       expect(executor.executeBrokerDeployment).not.toHaveBeenCalled();
       await expect(
@@ -421,6 +428,61 @@ test.each([
     } finally {
       await f.cleanup();
     }
+  },
+);
+
+test.each(["failed", "prepared"] as const)(
+  "ordinary queue writes retain the owned %s preparation outcome",
+  async (outcome) => {
+    const journal = new CanonicalLifecycleJournal();
+    const executor = inertBrokerDeploymentExecutor();
+    let resume!: () => void;
+    let started!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const validating = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    vi.mocked(executor.validateBrokerDeploymentPlan).mockImplementationOnce(async () => {
+      started();
+      await paused;
+      if (outcome === "failed") throw new Error("candidate_invalid");
+    });
+    const queue = new InstallationRestarts(journal, {
+      restart: async () => "unexpected",
+      brokerDeployment: executor,
+    });
+    const input = brokerDeploymentPreparation();
+    const preparing = queue.prepareBrokerDeployment(input, "host-agent");
+    await validating;
+    journal.mutate((previous) => [
+      ...previous,
+      RestartJobSchema.parse({
+        id: randomUUID(),
+        revision: randomUUID(),
+        target: "host",
+        requestedBy: "owner",
+        reason: "Foreign writer",
+        detail: "Foreign restart fence",
+        status: "pending",
+        finishCurrentTurns: true,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    ]);
+    resume();
+    const result = await preparing;
+    expect(result).toMatchObject({
+      status: outcome === "failed" ? "failed" : "pending",
+      stage: outcome === "failed" ? "preparing" : "prepared",
+    });
+    if (outcome === "failed")
+      expect(result.detail).toBe("Consumer preparation refused: candidate_invalid");
+    queue.request({ target: "host", reason: "Ordinary queue write" }, "owner");
+    expect(journal.read().find((job) => job.id === input.id)).toEqual(result);
+    expect(queue.listBrokerDeployments()).toEqual([result]);
+    expect(executor.executeBrokerDeployment).not.toHaveBeenCalled();
   },
 );
 

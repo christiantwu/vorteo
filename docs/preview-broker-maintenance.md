@@ -144,7 +144,11 @@ request itself is unchanged. Both attempts retain full-journal reservations.
 Validation retries never approve a request or replay native deployment effects.
 The fresh reservation belongs only to that preparation attempt. New preparation,
 owner decisions and dispatch refuse if disk differs from the coordinator's
-evaluated snapshot. Deployment writes do not refresh other lifecycle queues.
+evaluated snapshot. After a preparation-only refresh, the coordinator retains
+only the outcome it durably wrote for that same request, so later ordinary queue
+writes preserve its prepared state or failure reason. It does not adopt another
+writer's records, decisions or revisions. Deployment writes do not refresh other
+lifecycle queues.
 Status and same-identity resubmission read retained receipts without advancing
 that snapshot or admitting subsequent work.
 
@@ -163,6 +167,8 @@ shapes and WebSocket schemas are unchanged. The scoped client directs you to
 unresolved. Resubmission reports it without repairing it or retrying native work.
 If another writer removed the request during bookkeeping, this response still
 reports persistence uncertainty; status may report no retained request.
+Legacy ordinary queue writes can still overwrite other writers' records; this
+repair only prevents reversion of the owned deployment outcome.
 Participant-scope replacement remains a separate operation and is not supplied
 by this repair.
 
