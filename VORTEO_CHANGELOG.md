@@ -2,6 +2,22 @@
 
 The initial baseline is cumulative; older entries do not cover every maintenance commit. Historical version labels are preserved. Paseo release history remains in the [upstream changelog](CHANGELOG.md); the [customizations inventory](docs/vorteo-customizations.md) describes current fork capabilities and limitations.
 
+## 26.11.1601 - 2026-11-16
+
+### Fixes
+
+- Opening an unloaded OpenCode thread shows its history again. Since 26.11.1600, timeline reads served saved history without resuming the thread, and OpenCode has no way to read saved history passively, so these threads showed an error instead, which after a daemon restart meant every OpenCode thread. OpenCode-family threads load through their provider to show history, as before; Claude and Codex threads keep reading saved history without resuming.
+
+### Maintenance
+
+- Prepare release 26.11.1601, which replaces 26.11.1600 as the stable candidate.
+
+## Unreleased - 2026-11-17
+
+### Maintenance
+
+- Combine 1 source contributions; retain their release notes below
+
 ## 26.11.1600 - 2026-11-16
 
 ### Fixes
