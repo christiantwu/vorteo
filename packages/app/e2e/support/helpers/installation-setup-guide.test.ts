@@ -1,23 +1,18 @@
-import { runInNewContext } from "node:vm";
+import { compileFunction } from "node:vm";
 import type { BrowserContext } from "@playwright/test";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { createVorteoGuide } from "../../../src/onboarding/vorteo-guide/model";
-import { guideStorage, guideStorageKey } from "../../../src/onboarding/vorteo-guide/storage";
-import { completeInstallationSetupGuide } from "./installation-setup-guide";
+import { createGuideStorage, guideStorageKey } from "../../../src/onboarding/vorteo-guide/storage";
+import {
+  completeInstallationSetupGuide,
+  seedInstallationSetupGuide,
+  type InstallationGuideEnvironment,
+} from "./installation-setup-guide";
 
-class MemoryStorage implements Storage {
-  private readonly entries = new Map<string, string>();
-  get length() {
-    return this.entries.size;
-  }
-  clear() {
-    this.entries.clear();
-  }
+class MemoryStorage implements Pick<Storage, "getItem" | "setItem" | "removeItem"> {
+  readonly entries = new Map<string, string>();
   getItem(key: string) {
     return this.entries.get(key) ?? null;
-  }
-  key(index: number) {
-    return [...this.entries.keys()][index] ?? null;
   }
   removeItem(key: string) {
     this.entries.delete(key);
@@ -27,52 +22,66 @@ class MemoryStorage implements Storage {
   }
 }
 
-it("seeds completion understood by the guide while preserving origin and installation isolation", async () => {
+it("seeds completion through explicit adapters and the serialized browser registration", async () => {
   const scripts: string[] = [];
   const context: Pick<BrowserContext, "addInitScript"> = {
-    async addInitScript(script, arg) {
-      if (typeof script !== "function") throw new TypeError("Expected an init callback");
-      scripts.push(`(${script.toString()})(${JSON.stringify(arg)})`);
+    async addInitScript(script) {
+      if (typeof script !== "string") throw new TypeError("Expected serialized init source");
+      scripts.push(script);
     },
   };
   const installationId = "fixture/installation with spaces";
   const origin = "https://installation.example";
   const storage = new MemoryStorage();
+  const guideStorage = createGuideStorage({
+    getItem: async (key) => storage.getItem(key),
+    setItem: async (key, value) => storage.setItem(key, value),
+    removeItem: async (key) => storage.removeItem(key),
+  });
+  const environment: InstallationGuideEnvironment = { origin, isTopLevel: true, storage };
+  const seed = { origin, key: guideStorageKey(installationId) };
   storage.setItem("unrelated", "preserve me");
-  const executeDocument = (documentOrigin: string, topLevel = true) => {
-    const document = {
-      location: { origin: documentOrigin },
-      localStorage: storage,
-      top: {},
+
+  await expect(
+    completeInstallationSetupGuide(context, { installationId: " ", origin }),
+  ).rejects.toThrow(TypeError);
+  expect(scripts).toHaveLength(0);
+  await completeInstallationSetupGuide(context, { installationId, origin: `${origin}/setup` });
+  expect(scripts).toHaveLength(1);
+  // Supply window as a lexical function argument, never as a patched global.
+  // Only the registered helper source is compiled; product modules use their real imports.
+  const registered = compileFunction(scripts[0], ["window"]);
+  function executeRegistration(documentEnvironment: InstallationGuideEnvironment) {
+    const browserAdapter = {
+      location: { origin: documentEnvironment.origin },
+      get top(): object {
+        return documentEnvironment.isTopLevel ? browserAdapter : {};
+      },
+      localStorage: documentEnvironment.storage,
     };
-    const sandbox = { window: document };
-    // Each execution gets a fresh global scope, as a new document would.
-    runInNewContext(`${topLevel ? "window.top = window;" : ""}${scripts.join("\n")}`, sandbox);
-  };
+    registered(browserAdapter);
+  }
 
-  try {
-    await expect(
-      completeInstallationSetupGuide(context, { installationId: " ", origin }),
-    ).rejects.toThrow(TypeError);
-    expect(scripts).toHaveLength(0);
-    await completeInstallationSetupGuide(context, { installationId, origin: `${origin}/setup` });
-    expect(scripts).toHaveLength(1);
+  for (const execute of [
+    (documentEnvironment: InstallationGuideEnvironment) =>
+      seedInstallationSetupGuide(documentEnvironment, seed),
+    executeRegistration,
+  ]) {
+    storage.removeItem(seed.key);
+    execute({ ...environment, origin: "https://other.example" });
+    execute({ ...environment, isTopLevel: false });
+    expect([...storage.entries]).toEqual([["unrelated", "preserve me"]]);
+    execute(environment);
 
-    executeDocument("https://other.example");
-    executeDocument(origin, false);
-    expect(storage.length).toBe(1);
-    executeDocument(origin);
-
-    vi.stubGlobal("window", { localStorage: storage });
     const record = await guideStorage.read(installationId);
     expect(record).toEqual({ disposition: "completed", updatedAt: expect.any(String) });
     if (!record) throw new Error("Expected a completed guide record");
     expect(new Date(record.updatedAt).toISOString()).toBe(record.updatedAt);
-    const original = storage.getItem(guideStorageKey(installationId));
-    executeDocument(origin);
-    expect(storage.getItem(guideStorageKey(installationId))).toBe(original);
+    const original = storage.getItem(seed.key);
+    execute(environment);
+    expect(storage.getItem(seed.key)).toBe(original);
     expect(storage.getItem("unrelated")).toBe("preserve me");
-    expect(storage.length).toBe(2);
+    expect(storage.entries.size).toBe(2);
 
     for (const [id, status] of [
       [installationId, "hidden"],
@@ -97,10 +106,21 @@ it("seeds completion understood by the guide while preserving origin and install
     }
     expect(await guideStorage.read("unseeded")).toBeNull();
 
-    storage.setItem(guideStorageKey(installationId), "");
-    executeDocument(origin);
-    expect(storage.getItem(guideStorageKey(installationId))).toBe("");
-  } finally {
-    vi.unstubAllGlobals();
+    storage.setItem(seed.key, "");
+    execute(environment);
+    expect(storage.getItem(seed.key)).toBe("");
+    expect(await guideStorage.read(installationId)).toBeNull();
+    expect(storage.getItem(seed.key)).toBeNull();
+    await guideStorage.write(installationId, record);
+    expect(await guideStorage.read(installationId)).toEqual(record);
+
+    const failure = new Error("Storage write denied");
+    const failingStorage: InstallationGuideEnvironment["storage"] = {
+      getItem: () => null,
+      setItem: () => {
+        throw failure;
+      },
+    };
+    expect(() => execute({ ...environment, storage: failingStorage })).toThrow(failure);
   }
 });
