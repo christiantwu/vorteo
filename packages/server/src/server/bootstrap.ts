@@ -1807,6 +1807,22 @@ export async function createPaseoDaemon(
           .map((project) => project.projectId),
       );
     },
+    // Only a run that will really happen within a day counts as a wake: a schedule held for
+    // quota may never fire, and a weekly one would hide a stalled thread for a week.
+    scheduledWakes: async () => {
+      const horizon = Date.now() + 24 * 60 * 60_000;
+      return new Set(
+        (await scheduleService.list()).flatMap((schedule) =>
+          schedule.status === "active" &&
+          schedule.quotaState?.state !== "held" &&
+          schedule.nextRunAt &&
+          Date.parse(schedule.nextRunAt) <= horizon &&
+          schedule.target.type === "agent"
+            ? [schedule.target.agentId]
+            : [],
+        ),
+      );
+    },
   });
   const usageLimitResumes = new UsageLimitResumeService({
     agentManager,

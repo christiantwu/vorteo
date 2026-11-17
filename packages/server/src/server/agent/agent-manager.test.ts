@@ -16326,12 +16326,37 @@ test("periodic review scan honors the hourly cooldown and stops without creating
       now: () => now,
     }).tick();
     expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
+    // A heartbeat will wake this thread, so in-progress items are left to it; a blocked item
+    // is still reviewed.
+    const dueAfter = async (status: "in_progress" | "blocked") => {
+      await manager.mutateChecklist(agent.id, { operation: "update", id: "blocked", status });
+      await manager.flush();
+      const record = storage.getLoadedRecord(agent.id)!;
+      now =
+        Math.max(
+          Date.parse(record.createdAt),
+          Date.parse(record.lastActivityAt ?? record.createdAt),
+        ) + 300_001;
+      expect(blockedReviewDue(record, now)).toBe(true);
+    };
+    await dueAfter("in_progress");
+    await new BlockedTaskReviewService({
+      agentManager: manager,
+      agentStorage: storage,
+      logger,
+      enabled: () => true,
+      scheduledWakes: async () => new Set([agent.id]),
+      now: () => now,
+    }).tick();
+    expect((await storage.get(agent.id))?.lastBlockedReviewAt).toBeUndefined();
+    await dueAfter("blocked");
     const reviews = new BlockedTaskReviewService({
       agentManager: manager,
       agentStorage: storage,
       logger,
       enabled: () => true,
       pausedFactoryProjects: async () => new Set(["project-2"]),
+      scheduledWakes: async () => new Set([agent.id]),
       now: () => now,
     });
     await reviews.tick();
