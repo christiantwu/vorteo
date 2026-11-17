@@ -1,5 +1,9 @@
 # Vorteo customizations beyond Paseo
 
+Maintenance review (2026-11-17): Release preparation for 26.11.1700. Folded the saved-history repair fragment and recorded the Host and Dev installed commits for 26.11.1601. Functionality beyond that repair, README overview and onboarding are unchanged.
+
+Maintenance review (2026-11-17): Account switching within a thread narrows history reads that never resume a thread to the Claude and Codex families, subsuming the earlier OpenCode exception, and falls back to loading when a saved read replays no history, which is proven for Claude-family threads with an empty or missing transcript; a Codex read failure is still reported as an error. Account switches still refuse a missing transcript. A focused session case table covers OpenCode, a provider without replay, and Claude threads with and without a transcript; the upstream plugin lifecycle test passes unmodified. README overview and onboarding are unchanged.
+
 Maintenance review (2026-11-16): Release preparation for 26.11.1601. Folded the OpenCode unloaded-history fragment and recorded the Host and Dev installed commits for 26.11.1600. Functionality beyond that fix, README overview and onboarding are unchanged.
 
 Maintenance review (2026-11-16): Account switching within a thread now records the OpenCode exception to history reads that never resume a thread: OpenCode-family threads with a native session on an available provider load through their provider, and every other provider keeps the saved-history path. A focused session test covers the case. README overview and onboarding are unchanged.
