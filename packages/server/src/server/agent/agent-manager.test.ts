@@ -7788,6 +7788,23 @@ test("markAgentUnread dispatches stored attention to every subscriber", async ()
     attentionReason: null,
     attentionTimestamp: null,
   });
+
+  // A clear that arrives while the thread is resuming waits for the resume and clears the
+  // loaded agent, rather than writing a stale record under it.
+  await manager.markAgentUnread(created.id);
+  const persistence = (await storage.get(created.id))!.persistence!;
+  const resuming = manager.resumeAgentFromPersistence(persistence, undefined, created.id, {
+    attention: {
+      requiresAttention: true,
+      attentionReason: "finished",
+      attentionTimestamp: new Date(),
+    },
+  });
+  await manager.clearAgentAttention(created.id);
+  await resuming;
+  expect(manager.getAgent(created.id)?.attention.requiresAttention).toBe(false);
+  expect((await storage.get(created.id))?.requiresAttention).toBe(false);
+  await manager.closeAgent(created.id);
 });
 
 test("reloadAgentSession cancels active run and resumes existing session once thread_started is observed", async () => {
