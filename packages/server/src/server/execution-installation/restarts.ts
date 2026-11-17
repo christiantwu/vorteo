@@ -2,6 +2,8 @@ import { z } from "zod";
 import { type PreviewBrokerDeploymentJob } from "@getpaseo/protocol/preview-broker-deployment";
 import {
   PreviewBrokerDeploymentWorkflow,
+  BrokerDeploymentReservationChanged,
+  BrokerDeploymentRefused,
   type BrokerDeploymentExecutor,
 } from "./preview-broker-deployment-workflow.js";
 import {
@@ -430,8 +432,8 @@ export class InstallationRestarts {
     if (!startup.fenced) this.activate();
   }
 
-  private loadState(): void {
-    this.snapshot = this.journal.read();
+  private loadState(snapshot = this.journal.read()): void {
+    this.snapshot = snapshot;
     this.jobs = this.snapshot.filter(
       (job): job is RestartJob => job.target === "host" || job.target === "container-daemon",
     );
@@ -705,7 +707,13 @@ export class InstallationRestarts {
   }
 
   listBrokerDeployments(): PreviewBrokerDeploymentJob[] {
-    return structuredClone(this.brokerDeployments);
+    return structuredClone(
+      this.journal
+        .read()
+        .filter(
+          (job): job is PreviewBrokerDeploymentJob => job.target === "preview-broker-deployment",
+        ),
+    );
   }
 
   async brokerDeploymentAvailable(): Promise<boolean> {
@@ -714,10 +722,11 @@ export class InstallationRestarts {
 
   private deploymentWorkflow(): PreviewBrokerDeploymentWorkflow {
     const executor = this.executor.brokerDeployment;
+    let reserved = this.journal.read();
     const current = () => {
-      if (JSON.stringify(this.journal.read()) !== JSON.stringify(this.snapshot))
-        throw new RestartRequestError("Full installation journal reservation changed");
-      return this.snapshot;
+      if (!isDeepStrictEqual(this.journal.read(), reserved))
+        throw new BrokerDeploymentReservationChanged();
+      return reserved;
     };
     return new PreviewBrokerDeploymentWorkflow({
       requireActive: () => this.requireActive(),
@@ -725,13 +734,71 @@ export class InstallationRestarts {
       requestExists: (id) => current().some((job) => job.id === id),
       jobs: () => this.listBrokerDeployments(),
       replace: (job) => {
-        current();
-        const brokerDeployments = this.brokerDeployments.some((prior) => prior.id === job.id)
-          ? this.brokerDeployments.map((prior) => (prior.id === job.id ? job : prior))
-          : [...this.brokerDeployments, job];
-        this.writeState(this.jobs, this.helpers, this.monitors, this.listServices(), undefined, {
-          brokerDeployments,
+        if (!this.journal.mutate)
+          throw new BrokerDeploymentRefused("Atomic deployment journal is unavailable");
+        let committed = reserved;
+        const activity = this.operationalActivitySink ? createOperationalActivityBatch() : null;
+        this.journal.mutate((previous) => {
+          this.requireActive();
+          if (!isDeepStrictEqual(previous, reserved))
+            throw new BrokerDeploymentReservationChanged();
+          const next = previous.some((prior) => prior.id === job.id)
+            ? previous.map((prior) => (prior.id === job.id ? job : prior))
+            : [...previous, job];
+          committed = parseLifecycleJournal(next);
+          activity?.change(
+            previous.find((prior) => prior.id === job.id),
+            job,
+          );
+          return next;
         });
+        reserved = committed;
+        this.loadState(committed);
+        if (activity && this.operationalActivitySink)
+          activity.flush(this.operationalActivitySink, this.now);
+      },
+      refreshPreparation: (job) => {
+        const fresh = this.journal.read();
+        const retained = fresh.find((item) => item.id === job.id);
+        // A competing change to this request cannot acquire a new reservation.
+        if (!isDeepStrictEqual(retained, job)) return false;
+        reserved = fresh;
+        return true;
+      },
+      failPreparation: (job, reason) => {
+        const activity = this.operationalActivitySink ? createOperationalActivityBatch() : null;
+        if (!this.journal.mutate)
+          throw new BrokerDeploymentRefused("Atomic deployment journal is unavailable");
+        this.journal.mutate((previous) => {
+          this.requireActive();
+          return previous.map((retained) => {
+            if (
+              retained.id !== job.id ||
+              retained.target !== "preview-broker-deployment" ||
+              retained.revision !== job.revision ||
+              retained.planSha256 !== job.planSha256 ||
+              !isDeepStrictEqual(retained.plan, job.plan) ||
+              retained.reason !== job.reason ||
+              retained.status !== "pending" ||
+              retained.stage !== "preparing" ||
+              retained.approvedAt !== undefined
+            )
+              return retained;
+            const failure = `Consumer preparation refused: ${reason}`;
+            const detail =
+              retained.detail === job.detail ? failure : `${retained.detail} ${failure}`;
+            const failed: PreviewBrokerDeploymentJob = { ...retained, status: "failed", detail };
+            activity?.change(retained, failed);
+            return failed;
+          });
+        });
+        this.loadState();
+        if (activity && this.operationalActivitySink)
+          activity.flush(this.operationalActivitySink, this.now);
+        const retained = this.listBrokerDeployments().find((item) => item.id === job.id);
+        if (!retained)
+          throw new BrokerDeploymentRefused("Deployment request is no longer retained");
+        return retained;
       },
       executor,
       now: this.now,
