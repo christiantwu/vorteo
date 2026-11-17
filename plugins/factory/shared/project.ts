@@ -72,6 +72,22 @@ export function projectFactoryClaimBranch(issue: number): string {
   return `factory/issue-${issue}`;
 }
 
+/**
+ * Where the Foreman's per-issue leads, workers and reviewers run: the Dev container, which
+ * runs untrusted repository code, or this host. Factory role agents always stay here.
+ */
+export const ProjectFactoryIssueAgentsSchema = z.enum(["dev", "host"]);
+export type ProjectFactoryIssueAgents = z.infer<typeof ProjectFactoryIssueAgentsSchema>;
+
+/** The connected Dev host issue agents start on, or why it cannot take them now. */
+export const ProjectFactoryIssueAgentHostSchema = z.object({
+  /** Dev's server id once learned; null when Dev was never reached. */
+  serverId: z.string().nullable(),
+  /** Why Dev cannot take new issue agents, such as "Dev is offline"; null when it can. */
+  unavailable: z.string().nullable(),
+});
+export type ProjectFactoryIssueAgentHost = z.infer<typeof ProjectFactoryIssueAgentHostSchema>;
+
 export const ProjectFactoryStateSchema = z.object({
   schemaVersion: z.literal(1),
   serverId: z.string().min(1),
@@ -83,6 +99,19 @@ export const ProjectFactoryStateSchema = z.object({
   installation: z.string().min(1).optional(),
   /** The last `.github/factory.json` read; null before the first. Optional for older daemons. */
   assignment: ProjectFactoryAssignmentSchema.nullable().optional(),
+  /**
+   * The installation environment that runs Factory for this repository; `here` is false when
+   * another one does. Null outside an installation or while Factory is off. Optional for older
+   * daemons.
+   */
+  home: z
+    .object({
+      environment: z.enum(["host", "container"]),
+      projectId: z.string().nullable(),
+      here: z.boolean(),
+    })
+    .nullable()
+    .optional(),
   state: z.enum(["off", "on", "paused", "unavailable"]),
   repository: ProjectFactoryRepositorySchema.nullable(),
   /** Human-readable; set for "unavailable". */
@@ -92,7 +121,14 @@ export const ProjectFactoryStateSchema = z.object({
     planning: z.boolean().optional(),
     workerProfileId: nullableId,
     reviewerProfileId: nullableId,
+    /** Absent from older daemons, which run issue agents here. */
+    issueAgents: ProjectFactoryIssueAgentsSchema.optional(),
   }),
+  /**
+   * Dev's availability, set when issue agents run in Dev or the owner's Dev host exists, since
+   * agents started there keep running after a switch. Only `get` reports it.
+   */
+  issueAgentHost: ProjectFactoryIssueAgentHostSchema.nullable().optional(),
   /** The current pause_all drain, if any. Optional so older daemons still parse. */
   drain: ProjectFactoryDrainSchema.nullable().optional(),
   roles: z.array(
@@ -122,8 +158,19 @@ export const factoryProjectGet = defineRpc({
 });
 
 export const ProjectFactoryQueueSchema = z.object({
+  /** GitHub is current but optional agent evidence is unavailable. */
+  degraded: z.string().optional(),
+  /** A display refresh is running; the returned snapshot remains usable. */
+  refreshing: z.boolean().optional(),
+  /** GitHub evidence is present but an agent dependency could not be read. */
+  partial: z.boolean().optional(),
   fetchedAt: z.string(),
   error: z.string().nullable(),
+  /**
+   * Whether Dev's agents could be read, set whenever Dev is observed (see the project state).
+   * When not, `agents` lists only this host's, so an issue may show fewer agents than it has.
+   */
+  issueAgentHost: ProjectFactoryIssueAgentHostSchema.nullable().optional(),
   issues: z.array(
     z.object({
       number: z.number().int(),
@@ -145,6 +192,8 @@ export const ProjectFactoryQueueSchema = z.object({
           role: z.enum(["lead", "worker", "reviewer"]),
           agentId: z.string(),
           status: z.string(),
+          /** The connected host the agent runs on; absent for this host. */
+          serverId: z.string().optional(),
         }),
       ),
       /**
@@ -211,6 +260,7 @@ export const factoryProjectConfigure = defineRpc({
     planning: z.boolean().optional(),
     workerProfileId: nullableId.optional(),
     reviewerProfileId: nullableId.optional(),
+    issueAgents: ProjectFactoryIssueAgentsSchema.optional(),
   }),
   output: ProjectFactoryStateSchema,
 });
