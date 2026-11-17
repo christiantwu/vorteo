@@ -1,4 +1,5 @@
 import { openSettings } from "../support/helpers/app";
+import { completeInstallationSetupGuide } from "../support/helpers/installation-setup-guide";
 import {
   openSettingsEnvironmentExceptions,
   revealSettingsLocation,
@@ -71,6 +72,15 @@ import { RestartJobSchema } from "@getpaseo/protocol/execution-installation";
 // Measure the first document load in each fresh test context, including failures.
 // This is browser load latency, not application readiness or later reload latency.
 const test = base.extend<{ firstLoadTiming: void }>({
+  // Seed the completed setup guide before any page exists, so the first load, reloads
+  // and context.newPage() recovery pages all open without the guide covering Settings.
+  context: async ({ context }, provideContext) => {
+    await completeInstallationSetupGuide(context, {
+      installationId: config.public.installationId,
+      origin,
+    });
+    await provideContext(context);
+  },
   firstLoadTiming: [
     async ({ page }, runTest, info) => {
       let startedAt: number | null = null;
