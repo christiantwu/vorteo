@@ -2828,7 +2828,10 @@ test("directory bindings stay local and preserve an excluded plugin through vali
   await page.getByTestId("installation-unlock").click();
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
   await page.goto(`${origin}/settings/environments`);
-  const row = page.getByTestId(`plugin-directory-binding-${dev.serverId}-host-authority-test`);
+  const devExceptions = await openSettingsEnvironmentExceptions(page, dev.serverId);
+  const row = devExceptions.getByTestId(
+    `plugin-directory-binding-${dev.serverId}-host-authority-test`,
+  );
   await row.getByRole("button", { name: "Edit directory", exact: true }).click();
   const input = page.getByTestId("plugin-directory-binding-path");
   await input.fill(path.join(root, "missing-directory"));
@@ -2873,8 +2876,11 @@ test("directory bindings stay local and preserve an excluded plugin through vali
       (await hostClient.listPlugins()).find((plugin) => plugin.id === "host-authority-test")?.path,
     ).toBe(path.join(root, "host-plugin"));
     await expect(
-      page.getByTestId(`plugin-directory-binding-${host.serverId}-host-authority-test`),
+      (await openSettingsEnvironmentExceptions(page, host.serverId)).getByTestId(
+        `plugin-directory-binding-${host.serverId}-host-authority-test`,
+      ),
     ).toContainText(path.join(root, "host-plugin"));
+    await openSettingsEnvironmentExceptions(page, dev.serverId);
     await row.scrollIntoViewIfNeeded();
     await page.screenshot({ path: info.outputPath("local-directory-binding.png"), fullPage: true });
   } finally {
@@ -3666,10 +3672,14 @@ test("provider environment exceptions disable Host access while retaining Dev an
   const host = config.public.environments.find((environment) => environment.kind === "host");
   if (!host) throw new Error("Missing host fixture");
   await page.goto(`${origin}/settings/environments`);
-  const toggle = page.getByTestId(
-    `resource-availability-${host.serverId}-providerIds-${definition.id}`,
-  );
+  const hostExceptions = await openSettingsEnvironmentExceptions(page, host.serverId);
+  const toggle = hostExceptions.getByRole("switch", {
+    name: `Provider: ${definition.policy.label ?? definition.providerType} availability`,
+    exact: true,
+  });
+  await expect(toggle).toBeChecked();
   await toggle.click();
+  await expect(toggle).not.toBeChecked();
   await expect
     .poll(async () => (await read()).settings?.resourceExclusions[host.serverId]?.providerIds)
     .toContain(definition.id);
