@@ -2893,6 +2893,7 @@ test("a directory plugin is created once with separate environment paths", async
   page,
 }, info) => {
   const pluginId = "shared-directory";
+  const hostServerId = daemons[1]!.serverId;
   await page.goto(origin);
   await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
@@ -2924,16 +2925,23 @@ test("a directory plugin is created once with separate environment paths", async
   await expect(page.getByTestId(`shared-plugin-${pluginId}`)).toHaveCount(1);
   await page
     .getByTestId(`shared-plugin-${pluginId}`)
-    .getByRole("button", { name: "Directories", exact: true })
+    .filter({ visible: true })
+    .getByRole("button", { name: "Directories for shared-directory", exact: true })
     .click();
-  await expect(page).toHaveURL(`${origin}/settings/environments`);
+  await expect(page).toHaveURL(`${origin}/settings/hosts/${encodeURIComponent(hostServerId)}/host`);
+  await expect(
+    page
+      .getByRole("dialog")
+      .filter({ has: page.getByTestId(`settings-environment-${hostServerId}`) })
+      .filter({ visible: true }),
+  ).toBeVisible();
   const paths: string[] = [];
   for (const kind of ["host", "container"] as const) {
     const client = await connectReadyInstallationDaemon(kind);
     const directory = path.join(root, `${kind}-shared-directory`);
     paths.push(directory);
     await cp(path.join(root, `${kind}-plugin`), directory, { recursive: true });
-    const serverId = kind === "host" ? daemons[1]!.serverId : daemons[0]!.serverId;
+    const serverId = kind === "host" ? hostServerId : daemons[0]!.serverId;
     const environment = await openSettingsEnvironmentExceptions(page, serverId);
     const row = environment.getByTestId(`plugin-directory-binding-${serverId}-${pluginId}`);
     await row.getByRole("button", { name: "Edit directory", exact: true }).click();
@@ -2966,13 +2974,22 @@ test("a directory plugin is created once with separate environment paths", async
   ).toEqual([{ id: pluginId, enabled: true, source: { kind: "directory" } }]);
   for (const directory of paths) expect(JSON.stringify(snapshot)).not.toContain(directory);
   await page.goto(`${origin}/settings/plugins`);
+  await page
+    .getByTestId("shared-plugins-list")
+    .filter({ visible: true })
+    .getByRole("button", { name: "Manage plugins", exact: true })
+    .click();
+  const pluginsDialog = page
+    .getByRole("dialog", { name: "Plugins", exact: true })
+    .filter({ visible: true });
+  await expect(pluginsDialog).toBeVisible();
   for (const daemon of daemons)
     await expect(
-      page
+      pluginsDialog
         .getByTestId(`shared-plugin-environment-${pluginId}-${daemon.serverId}`)
         .getByText("running", { exact: true }),
     ).toBeVisible({ timeout: 30_000 });
-  await page.getByTestId(`shared-plugin-${pluginId}`).scrollIntoViewIfNeeded();
+  await pluginsDialog.getByTestId(`shared-plugin-${pluginId}`).scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath("shared-directory-plugin.png"), fullPage: true });
 });
 

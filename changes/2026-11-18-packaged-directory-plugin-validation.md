@@ -1,6 +1,6 @@
 ### Maintenance
 
-- Repair the packaged directory plugin test to check the exact validation message and Save state within the creation dialog, then edit each environment directory through its settings dialog.
+- Repair the packaged directory plugin test to check the exact validation message and Save state within the creation dialog, follow the directory action to the Host route and verify its dialog opens, then edit each environment directory through its settings dialog. Reopen the Plugins catalog after returning to settings before checking both running states.
 
 ## Maintenance review
 
