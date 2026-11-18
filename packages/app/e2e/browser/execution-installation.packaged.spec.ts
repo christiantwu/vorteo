@@ -2922,8 +2922,18 @@ test("a directory plugin is created once with separate environment paths", async
   await expect(form.getByRole("button", { name: "Save shared plugin", exact: true })).toBeEnabled();
   await form.getByRole("button", { name: "Save shared plugin", exact: true }).click();
   await expect(form).not.toBeVisible();
-  await expect(page.getByTestId(`shared-plugin-${pluginId}`)).toHaveCount(1);
+  await page.goto(`${origin}/settings/plugins`);
   await page
+    .getByTestId("shared-plugins-list")
+    .filter({ visible: true })
+    .getByRole("button", { name: "Manage plugins", exact: true })
+    .click();
+  const pluginsDialog = page
+    .getByRole("dialog", { name: "Plugins", exact: true })
+    .filter({ visible: true });
+  await expect(pluginsDialog).toBeVisible();
+  await expect(pluginsDialog.getByTestId(`shared-plugin-${pluginId}`)).toHaveCount(1);
+  await pluginsDialog
     .getByTestId(`shared-plugin-${pluginId}`)
     .filter({ visible: true })
     .getByRole("button", { name: "Directories for shared-directory", exact: true })
@@ -2979,9 +2989,6 @@ test("a directory plugin is created once with separate environment paths", async
     .filter({ visible: true })
     .getByRole("button", { name: "Manage plugins", exact: true })
     .click();
-  const pluginsDialog = page
-    .getByRole("dialog", { name: "Plugins", exact: true })
-    .filter({ visible: true });
   await expect(pluginsDialog).toBeVisible();
   for (const daemon of daemons)
     await expect(
