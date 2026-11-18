@@ -2893,6 +2893,7 @@ test("a directory plugin is created once with separate environment paths", async
   page,
 }, info) => {
   const pluginId = "shared-directory";
+  const hostServerId = daemons[1]!.serverId;
   await page.goto(origin);
   await openOwnerUnlock(page);
   await page.getByTestId("installation-password").fill(ownerPassword);
@@ -2900,32 +2901,69 @@ test("a directory plugin is created once with separate environment paths", async
   await expect(page.getByTestId("installation-password")).not.toBeVisible();
   await page.goto(`${origin}/settings/plugins`);
   await page.getByTestId("shared-plugin-add").click();
-  await page.getByRole("radio", { name: "Local directories", exact: true }).click();
-  await page.getByTestId("shared-plugin-source").fill("invalid directory");
-  await page.getByTestId("shared-plugin-prepare").click();
-  await expect(page.getByRole("alert").filter({ hasText: "Enter a plugin ID" })).toBeVisible();
-  await page.getByTestId("shared-plugin-source").fill(pluginId);
-  await page.getByTestId("shared-plugin-prepare").click();
-  await page.getByTestId("shared-plugin-save").click();
-  await expect(page.getByTestId("shared-plugin-form")).not.toBeVisible();
-  await expect(page.getByTestId(`shared-plugin-${pluginId}`)).toHaveCount(1);
+  const form = page
+    .getByRole("dialog", { name: "Add shared plugin", exact: true })
+    .filter({ visible: true });
+  await expect(form).toBeVisible();
+  await form.getByRole("radio", { name: "Local directories", exact: true }).click();
+  await form.getByRole("textbox", { name: "Plugin ID", exact: true }).fill("invalid directory");
+  await form.getByRole("button", { name: "Review plugin", exact: true }).click();
+  await expect(
+    form.getByText(
+      "Enter a plugin ID starting with a lowercase letter, followed by lowercase letters, numbers or hyphens.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    form.getByRole("button", { name: "Save shared plugin", exact: true }),
+  ).toBeDisabled();
+  await form.getByRole("textbox", { name: "Plugin ID", exact: true }).fill(pluginId);
+  await form.getByRole("button", { name: "Review plugin", exact: true }).click();
+  await expect(form.getByRole("button", { name: "Save shared plugin", exact: true })).toBeEnabled();
+  await form.getByRole("button", { name: "Save shared plugin", exact: true }).click();
+  await expect(form).not.toBeVisible();
+  await page.goto(`${origin}/settings/plugins`);
   await page
-    .getByTestId(`shared-plugin-${pluginId}`)
-    .getByRole("button", { name: "Directories", exact: true })
+    .getByTestId("shared-plugins-list")
+    .filter({ visible: true })
+    .getByRole("button", { name: "Manage plugins", exact: true })
     .click();
-  await expect(page).toHaveURL(`${origin}/settings/environments`);
+  const pluginsDialog = page
+    .getByRole("dialog", { name: "Plugins", exact: true })
+    .filter({ visible: true });
+  await expect(pluginsDialog).toBeVisible();
+  await expect(pluginsDialog.getByTestId(`shared-plugin-${pluginId}`)).toHaveCount(1);
+  await pluginsDialog
+    .getByTestId(`shared-plugin-${pluginId}`)
+    .filter({ visible: true })
+    .getByRole("button", { name: "Directories for shared-directory", exact: true })
+    .click();
+  await expect(page).toHaveURL(`${origin}/settings/hosts/${encodeURIComponent(hostServerId)}/host`);
+  await expect(
+    page
+      .getByRole("dialog")
+      .filter({ has: page.getByTestId(`settings-environment-${hostServerId}`) })
+      .filter({ visible: true }),
+  ).toBeVisible();
   const paths: string[] = [];
   for (const kind of ["host", "container"] as const) {
     const client = await connectReadyInstallationDaemon(kind);
     const directory = path.join(root, `${kind}-shared-directory`);
     paths.push(directory);
     await cp(path.join(root, `${kind}-plugin`), directory, { recursive: true });
-    const serverId = kind === "host" ? daemons[1]!.serverId : daemons[0]!.serverId;
-    const row = page.getByTestId(`plugin-directory-binding-${serverId}-${pluginId}`);
+    const serverId = kind === "host" ? hostServerId : daemons[0]!.serverId;
+    const environment = await openSettingsEnvironmentExceptions(page, serverId);
+    const row = environment.getByTestId(`plugin-directory-binding-${serverId}-${pluginId}`);
     await row.getByRole("button", { name: "Edit directory", exact: true }).click();
-    await page.getByTestId("plugin-directory-binding-path").fill(directory);
-    await page.getByTestId("plugin-directory-binding-save").click();
-    await expect(page.getByTestId("plugin-directory-binding-form")).not.toBeVisible();
+    const bindingForm = page
+      .getByRole("dialog", { name: "Directory for shared-directory", exact: true })
+      .filter({ visible: true });
+    await expect(bindingForm).toBeVisible();
+    await bindingForm
+      .getByRole("textbox", { name: "Plugin directory", exact: true })
+      .fill(directory);
+    await bindingForm.getByRole("button", { name: "Save directory", exact: true }).click();
+    await expect(bindingForm).not.toBeVisible();
     await expect(row).toContainText(directory);
     try {
       await expect
@@ -2946,13 +2984,19 @@ test("a directory plugin is created once with separate environment paths", async
   ).toEqual([{ id: pluginId, enabled: true, source: { kind: "directory" } }]);
   for (const directory of paths) expect(JSON.stringify(snapshot)).not.toContain(directory);
   await page.goto(`${origin}/settings/plugins`);
+  await page
+    .getByTestId("shared-plugins-list")
+    .filter({ visible: true })
+    .getByRole("button", { name: "Manage plugins", exact: true })
+    .click();
+  await expect(pluginsDialog).toBeVisible();
   for (const daemon of daemons)
     await expect(
-      page
+      pluginsDialog
         .getByTestId(`shared-plugin-environment-${pluginId}-${daemon.serverId}`)
         .getByText("running", { exact: true }),
     ).toBeVisible({ timeout: 30_000 });
-  await page.getByTestId(`shared-plugin-${pluginId}`).scrollIntoViewIfNeeded();
+  await pluginsDialog.getByTestId(`shared-plugin-${pluginId}`).scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath("shared-directory-plugin.png"), fullPage: true });
 });
 
